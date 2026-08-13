@@ -1,0 +1,19 @@
+name: Publish Public Snapshot
+
+# Copy to .github/workflows/publish.yaml in a private repo.
+# Replace <REPO>-public with the target, and add the PUBLIC_SYNC_DEPLOY_KEY secret.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  publish:
+    uses: jcwearn/workflows/.github/workflows/public-sync.yaml@main
+    with:
+      target-repo: jcwearn/<REPO>-public
+      readme-override: .github/public-README.md
+    secrets:
+      DEPLOY_KEY: ${{ secrets.PUBLIC_SYNC_DEPLOY_KEY }}

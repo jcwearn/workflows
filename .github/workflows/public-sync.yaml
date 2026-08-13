@@ -1,0 +1,148 @@
+name: Public Sync
+
+# Publishes a filtered snapshot of a private repo to a public counterpart.
+#
+# The target repo only ever receives file trees -- never commits, branches, or
+# refs from the source. Its history is an independent linear series of "sync:"
+# commits, so private history cannot leak even if the source is later rewritten.
+
+on:
+  workflow_call:
+    inputs:
+      target-repo:
+        description: "owner/repo of the public counterpart, e.g. jcwearn/foo-public"
+        required: true
+        type: string
+      ignore-file:
+        description: "rsync exclude-from file, relative to the source repo root"
+        required: false
+        default: .publicignore
+        type: string
+      readme-override:
+        description: "Path in the source repo to publish as the target's README.md"
+        required: false
+        default: ""
+        type: string
+      gitleaks-version:
+        description: "Pinned gitleaks release used for the pre-push secret scan"
+        required: false
+        default: "8.30.1"
+        type: string
+      gitleaks-sha256:
+        description: "sha256 of gitleaks_<version>_linux_x64.tar.gz"
+        required: false
+        default: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+        type: string
+    secrets:
+      DEPLOY_KEY:
+        description: "SSH private key with write access to target-repo"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-sync-${{ inputs.target-repo }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync to ${{ inputs.target-repo }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source (private)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          path: source
+          persist-credentials: false
+
+      - name: Check out target (public)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          repository: ${{ inputs.target-repo }}
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+          path: target
+
+      - name: Render public tree
+        env:
+          IGNORE_FILE: ${{ inputs.ignore-file }}
+          README_OVERRIDE: ${{ inputs.readme-override }}
+        run: |
+          set -euo pipefail
+
+          exclude_args=()
+          if [ -n "$IGNORE_FILE" ]; then
+            if [ -f "source/$IGNORE_FILE" ]; then
+              exclude_args+=("--exclude-from=source/$IGNORE_FILE")
+              echo "Using ignore file: $IGNORE_FILE"
+            else
+              echo "::error::ignore-file '$IGNORE_FILE' not found in source repo."
+              echo "Refusing to publish an unfiltered tree. Create it or pass ignore-file: ''."
+              exit 1
+            fi
+          else
+            echo "::warning::No ignore file configured -- publishing the entire tracked tree."
+          fi
+
+          # --exclude=.git/ applies to both sides, which is also what protects
+          # target/.git from --delete. Do not remove it.
+          rsync -a --delete \
+            --exclude=.git/ \
+            "${exclude_args[@]}" \
+            source/ target/
+
+          if [ -n "$README_OVERRIDE" ]; then
+            if [ ! -f "source/$README_OVERRIDE" ]; then
+              echo "::error::readme-override '$README_OVERRIDE' not found in source repo."
+              exit 1
+            fi
+            cp "source/$README_OVERRIDE" target/README.md
+            echo "Applied README override from $README_OVERRIDE"
+          fi
+
+      - name: Scan rendered tree for secrets
+        env:
+          VERSION: ${{ inputs.gitleaks-version }}
+          SHA256: ${{ inputs.gitleaks-sha256 }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz"
+          echo "${SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+
+          # Scans exactly what is about to be published, after filtering.
+          # --redact keeps findings out of the log. A repo may ship its own
+          # .gitleaks.toml, which gitleaks picks up from the scanned directory.
+          if ! ./gitleaks dir target --redact --no-banner --exit-code 1 \
+                 --report-format json --report-path gitleaks-report.json; then
+            echo "::error::Secret scan failed -- nothing was pushed."
+            echo "Findings (redacted):"
+            jq -r '.[] | "  \(.RuleID)  \(.File):\(.StartLine)"' gitleaks-report.json
+            echo ""
+            echo "Investigate before retrying. If a finding is a false positive,"
+            echo "add a .gitleaks.toml allowlist to the source repo -- do not"
+            echo "bypass this step."
+            exit 1
+          fi
+          echo "Secret scan clean."
+
+      - name: Commit and push
+        working-directory: target
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to publish."
+            exit 0
+          fi
+
+          git commit -m "sync: ${SOURCE_REPO}@${SOURCE_SHA:0:7}"
+          git push
+          echo "Published ${SOURCE_SHA:0:7} to ${{ inputs.target-repo }}."
