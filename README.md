@@ -82,9 +82,14 @@ Two failure modes worth knowing:
   signature header actually attached and fails if not, so a misconfiguration surfaces
   as a red run instead of a missing badge nobody notices.
 
-One signing key serves every repo pair; only the secret is per-repo. Note the blast
-radius is wider than the deploy keys: anyone holding it can sign commits that appear
-verified as you in *any* repo. Revoke from the account keys page.
+**One signing key serves every repo pair** — generate and register it once, then reuse
+it. Deploy keys are the opposite: GitHub rejects reusing one across repos, so each
+pair needs its own. Personal accounts have no org-level Actions secrets, so the same
+signing key still has to be set as a secret in each private repo — keep the private
+key rather than deleting it after the first setup.
+
+Blast radius is wider than the deploy keys: anyone holding it can sign commits that
+appear verified as you in *any* repo. Revoke from the account keys page.
 
 ### What it does
 

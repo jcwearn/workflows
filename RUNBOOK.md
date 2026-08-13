@@ -142,13 +142,24 @@ gh secret set PUBLIC_SYNC_DEPLOY_KEY -R "jcwearn/${REPO}" < /tmp/${REPO}-sync
 rm /tmp/${REPO}-sync /tmp/${REPO}-sync.pub   # never leave the private half on disk
 ```
 
-### Signing key (optional, once per account)
+### Signing key (optional, **once per account** — not per repo)
 
-Skip if you don't care about the Verified badge. One key covers every repo pair —
-only the secret is per-repo.
+Skip if you don't care about the Verified badge.
+
+Unlike the deploy key, this one is **generated and registered exactly once** and then
+reused forever. Signing keys are account-level: GitHub verifies any commit signed by
+any signing key on the account, in any repo. Note the contrast:
+
+| | Scope | New key per repo? |
+|---|---|---|
+| `PUBLIC_SYNC_DEPLOY_KEY` | one repo — GitHub rejects reusing a deploy key | **Yes** |
+| `PUBLIC_SYNC_SIGNING_KEY` | whole account | **No** |
+
+**If the key already exists at `~/.ssh/public-sync-signing`, skip generation and
+registration entirely** — jump to the `gh secret set` line below.
 
 ```bash
-ssh-keygen -t ed25519 -f /tmp/public-sync-signing -N "" -C "public-sync signing"
+ssh-keygen -t ed25519 -f ~/.ssh/public-sync-signing -N "" -C "public-sync signing"
 ```
 
 Register the **public** half at Settings → SSH and GPG keys → New SSH key with
@@ -160,9 +171,12 @@ Doing this in the browser deliberately avoids granting the CLI
 keys making commits look verified as you. (`gh ssh-key add --type signing` works if
 you'd rather.)
 
+Personal accounts have no org-level Actions secrets, so the **same** key still has to
+be set as a secret in each private repo. **Keep the private key** — don't delete it
+after the first repo, or onboarding the next one means regenerating and re-registering.
+
 ```bash
-gh secret set PUBLIC_SYNC_SIGNING_KEY -R "jcwearn/${REPO}" < /tmp/public-sync-signing
-rm /tmp/public-sync-signing /tmp/public-sync-signing.pub
+gh secret set PUBLIC_SYNC_SIGNING_KEY -R "jcwearn/${REPO}" < ~/.ssh/public-sync-signing
 ```
 
 Then set `signer-name`/`signer-email` on the caller. **The email must belong to the
