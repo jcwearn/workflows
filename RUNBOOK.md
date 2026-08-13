@@ -206,6 +206,17 @@ checking it disappears publicly.
 
 ---
 
+## Reference: commit messages are also published
+
+Under the default `message-mode: passthrough`, upstream commit subjects and bodies
+are replayed onto the public commit. Before enabling it on a repo, skim what the
+commit history actually says — internal PR numbers, design arguments, and references
+to private infrastructure all become public along with the code.
+
+Messages are scanned with `gitleaks stdin` and block the push on a hit, but that
+only catches credentials, not candour. `message-mode: generic` falls back to an
+opaque `sync: <short-sha>` if a repo's history isn't suitable.
+
 ## Reference: what's safe to publish
 
 - **SOPS-encrypted `*.sops.yaml`**: yes, that's the point of SOPS. Note the

@@ -23,6 +23,14 @@ on:
         required: false
         default: ""
         type: string
+      message-mode:
+        description: >-
+          passthrough: replay upstream commit messages onto the public commit.
+          generic: opaque "sync: <short-sha>" only. Use generic when upstream
+          commit messages discuss things you would rather not publish.
+        required: false
+        default: passthrough
+        type: string
       gitleaks-version:
         description: "Pinned gitleaks release used for the pre-push secret scan"
         required: false
@@ -55,6 +63,8 @@ jobs:
         with:
           path: source
           persist-credentials: false
+          # Full history so commit messages since the last sync can be replayed
+          fetch-depth: 0
 
       - name: Check out target (public)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
@@ -128,21 +138,86 @@ jobs:
           echo "Secret scan clean."
 
       - name: Commit and push
-        working-directory: target
         env:
           SOURCE_SHA: ${{ github.sha }}
-          SOURCE_REPO: ${{ github.repository }}
+          TARGET_REPO: ${{ inputs.target-repo }}
+          MESSAGE_MODE: ${{ inputs.message-mode }}
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
 
-          if git diff --cached --quiet; then
+          # Fail rather than defaulting: a typo silently falling back to
+          # passthrough would publish more than intended, not less.
+          case "$MESSAGE_MODE" in
+            passthrough|generic) ;;
+            *) echo "::error::message-mode must be 'passthrough' or 'generic', got '$MESSAGE_MODE'."; exit 1 ;;
+          esac
+
+          git -C target config user.name "github-actions[bot]"
+          git -C target config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C target add -A
+
+          if git -C target diff --cached --quiet; then
             echo "No changes to publish."
             exit 0
           fi
 
-          git commit -m "sync: ${SOURCE_REPO}@${SOURCE_SHA:0:7}"
-          git push
-          echo "Published ${SOURCE_SHA:0:7} to ${{ inputs.target-repo }}."
+          # Where the last sync left off, recorded as a trailer on the target's
+          # most recent commit. Survives failed runs: if two pushes land before a
+          # successful sync, both are described in the next commit message.
+          last=$(git -C target log -1 --format=%B 2>/dev/null \
+                   | sed -n 's/^Source-commit: //p' | tail -1 || true)
+
+          range=""
+          if [ -n "$last" ] && git -C source cat-file -e "${last}^{commit}" 2>/dev/null; then
+            if [ "$(git -C source rev-list --count "${last}..HEAD")" -gt 0 ]; then
+              range="${last}..HEAD"
+            fi
+          fi
+
+          # Subject and body come from the newest non-merge commit in scope. For a
+          # merged feature branch that is the actual work, not "Merge pull request
+          # #NN", which points at a PR nobody outside the private repo can open.
+          if [ -n "$range" ]; then
+            subject=$(git -C source log --no-merges -1 --format=%s "$range" 2>/dev/null || true)
+            body=$(git -C source log --no-merges -1 --format=%b "$range" 2>/dev/null || true)
+          else
+            subject=$(git -C source log --no-merges -1 --format=%s 2>/dev/null || true)
+            body=$(git -C source log --no-merges -1 --format=%b 2>/dev/null || true)
+          fi
+          [ -n "$subject" ] || subject=$(git -C source log -1 --format=%s "$SOURCE_SHA")
+          [ -n "$subject" ] || subject="sync"
+
+          if [ "$MESSAGE_MODE" = "generic" ]; then
+            subject="sync: ${SOURCE_SHA:0:7}"
+            body=""
+            range=""
+          fi
+
+          {
+            printf '%s\n' "$subject"
+            if [ -n "$body" ]; then
+              printf '\n%s\n' "$body"
+            fi
+            if [ -n "$range" ]; then
+              n=$(git -C source log --no-merges --oneline "$range" | wc -l | tr -d ' ')
+              if [ "$n" -gt 1 ]; then
+                printf '\nSynced %s upstream commits:\n' "$n"
+                # Bare short SHAs on purpose -- an owner/repo@sha reference would
+                # be auto-linkified into a link that 404s without private access.
+                git -C source log --no-merges --format='- %h %s' "$range"
+              fi
+            fi
+            printf '\nSource-commit: %s\n' "$SOURCE_SHA"
+          } > commit-message.txt
+
+          # Messages are a leak path the tree scan cannot see, so gate them too.
+          if ! ./gitleaks stdin --redact --no-banner --exit-code 1 < commit-message.txt; then
+            echo "::error::Secret detected in the composed commit message -- nothing was pushed."
+            echo "Rewrite the offending upstream commit message, or set message-mode: generic."
+            exit 1
+          fi
+
+          git -C target commit -q -F "$(pwd)/commit-message.txt"
+          git -C target push
+          echo "Published ${SOURCE_SHA:0:7} to ${TARGET_REPO}:"
+          echo "  $subject"

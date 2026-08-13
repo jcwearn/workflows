@@ -47,6 +47,7 @@ jobs:
 | `target-repo` | yes | — | `owner/repo` of the public counterpart |
 | `ignore-file` | no | `.publicignore` | rsync `--exclude-from` file. **The job fails if it's missing** rather than publishing an unfiltered tree. Pass `''` to opt out deliberately |
 | `readme-override` | no | `''` | Path in the source repo to publish as the target's `README.md` |
+| `message-mode` | no | `passthrough` | `passthrough` replays upstream commit messages; `generic` publishes an opaque `sync: <short-sha>` |
 | `gitleaks-version` | no | `8.30.1` | Pinned gitleaks release |
 | `gitleaks-sha256` | no | (matching) | Checksum for the pinned release |
 
@@ -63,8 +64,32 @@ Secret: `DEPLOY_KEY` — SSH private key with write access to `target-repo`.
 4. **Secret-scan gate**: runs gitleaks against the rendered tree — after filtering,
    so it sees exactly what's about to be published — and fails closed on any finding.
    Findings print redacted; nothing is pushed.
-5. Commits as `sync: <source-repo>@<short-sha>` and pushes. No-ops cleanly when the
-   filtered tree is unchanged, so unrelated merges don't create empty commits.
+5. Composes the commit message and pushes. No-ops cleanly when the filtered tree is
+   unchanged, so unrelated merges don't create empty commits.
+
+### Commit messages
+
+Under the default `passthrough` mode the public commit carries the real upstream
+subject and body, so the public history is readable on its own terms.
+
+Subject and body come from the newest **non-merge** commit in scope — for a merged
+feature branch that's the actual work, not `Merge pull request #NN`, which points at
+a PR nobody outside the private repo can open. When more than one commit is being
+published, they're listed as bare short SHAs. Deliberately not `owner/repo@sha`:
+GitHub auto-linkifies that form into a link that 404s without private access.
+
+Each commit ends with a `Source-commit: <full-sha>` trailer. The next run reads it
+back to work out what's new, so if a sync fails and two pushes accumulate, the
+following commit describes both.
+
+Two things to know:
+
+- **Commit messages are a leak path the tree scan can't see**, so they're scanned
+  separately with `gitleaks stdin` and the push is blocked on any hit. Fix the
+  upstream message, or switch to `message-mode: generic`.
+- Passthrough publishes whatever your private commits discuss — internal PR numbers,
+  design debate, references to private infrastructure. That's usually the point, but
+  it's worth a look before enabling it on a repo with candid commit history.
 
 A false positive from the scan should be handled with a `.gitleaks.toml` allowlist
 in the source repo. Don't bypass the step — across several repos it's the only thing
