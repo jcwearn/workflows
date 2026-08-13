@@ -76,7 +76,24 @@ REPO=myrepo
 gh repo create "jcwearn/${REPO}-public" --public --add-readme \
   --description "Public snapshot of jcwearn/${REPO}"
 
-# 2. Deploy key, scoped to exactly this one public repo
+# 2. Deploy key, scoped to exactly this one public repo.
+#
+#    IMPORTANT: a key created by `gh` is associated with the gh CLI's OAuth
+#    token, so pushes are attributed to that OAuth app. Without the `workflow`
+#    scope, any push touching .github/workflows/** is rejected:
+#
+#      ! [remote rejected] main -> main (refusing to allow an OAuth App to
+#        create or update workflow `.github/workflows/deploy.yaml`
+#        without `workflow` scope)
+#
+#    The sync fails at the push step with everything upstream green. Grant it
+#    first (--hostname is required when not on a TTY), then create the key:
+#
+#      gh auth refresh -s workflow --hostname github.com
+#
+#    If you'd rather not widen the CLI's scopes, either add `.github/workflows/`
+#    to .publicignore, or add the deploy key through the github.com web UI --
+#    UI-added keys aren't OAuth-app-associated and aren't subject to this.
 ssh-keygen -t ed25519 -f /tmp/${REPO}-sync -N "" -C "public-sync:${REPO}"
 gh repo deploy-key add /tmp/${REPO}-sync.pub -R "jcwearn/${REPO}-public" -w -t "public-sync"
 gh secret set PUBLIC_SYNC_DEPLOY_KEY -R "jcwearn/${REPO}" < /tmp/${REPO}-sync
