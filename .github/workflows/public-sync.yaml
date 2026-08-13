@@ -41,10 +41,32 @@ on:
         required: false
         default: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
         type: string
+      signer-name:
+        description: >-
+          Committer name used when SIGNING_KEY is set. The author stays
+          github-actions[bot]; only the committer changes.
+        required: false
+        default: ""
+        type: string
+      signer-email:
+        description: >-
+          Committer email used when SIGNING_KEY is set. Must be an email GitHub
+          associates with the account owning the key, or the commit shows as
+          unverified. A <id>+<login>@users.noreply.github.com address works and
+          avoids publishing a real address.
+        required: false
+        default: ""
+        type: string
     secrets:
       DEPLOY_KEY:
         description: "SSH private key with write access to target-repo"
         required: true
+      SIGNING_KEY:
+        description: >-
+          SSH private key registered on the account as a *signing* key (not an
+          authentication key -- an auth key silently fails to verify). Optional:
+          without it, commits are pushed unsigned.
+        required: false
 
 permissions:
   contents: read
@@ -142,6 +164,9 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
           TARGET_REPO: ${{ inputs.target-repo }}
           MESSAGE_MODE: ${{ inputs.message-mode }}
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          SIGNER_NAME: ${{ inputs.signer-name }}
+          SIGNER_EMAIL: ${{ inputs.signer-email }}
         run: |
           set -euo pipefail
 
@@ -152,8 +177,38 @@ jobs:
             *) echo "::error::message-mode must be 'passthrough' or 'generic', got '$MESSAGE_MODE'."; exit 1 ;;
           esac
 
+          # The author is always the bot -- the commit really is machine-made.
           git -C target config user.name "github-actions[bot]"
           git -C target config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Signing is optional so repos that have not been set up still sync.
+          # When a key IS supplied, refuse to fall back to an unsigned push:
+          # quietly publishing unsigned after signing was configured is the
+          # wrong direction to fail.
+          if [ -n "$SIGNING_KEY" ]; then
+            if [ -z "$SIGNER_EMAIL" ]; then
+              echo "::error::SIGNING_KEY is set but signer-email is empty."
+              echo "GitHub matches a signature to the account by *committer* email,"
+              echo "so an unset address would push a commit that never verifies."
+              exit 1
+            fi
+            install -m 600 /dev/null signing-key
+            printf '%s\n' "$SIGNING_KEY" > signing-key
+            git -C target config gpg.format ssh
+            git -C target config user.signingkey "$(pwd)/signing-key"
+            git -C target config commit.gpgsign true
+            # Committer (not author) is the identity GitHub verifies against.
+            export GIT_COMMITTER_NAME="${SIGNER_NAME:-$SIGNER_EMAIL}"
+            export GIT_COMMITTER_EMAIL="$SIGNER_EMAIL"
+            echo "Signing as ${GIT_COMMITTER_NAME} <${GIT_COMMITTER_EMAIL}>."
+          else
+            # Explicit rather than assumed: the checkout is fresh so this is
+            # already the default, but it keeps the unsigned path independent of
+            # any ambient git config on the runner.
+            git -C target config commit.gpgsign false
+            echo "No SIGNING_KEY supplied -- commit will be unsigned."
+          fi
+
           git -C target add -A
 
           if git -C target diff --cached --quiet; then
@@ -218,6 +273,24 @@ jobs:
           fi
 
           git -C target commit -q -F "$(pwd)/commit-message.txt"
+
+          if [ -n "$SIGNING_KEY" ]; then
+            # Confirm a signature actually attached, by looking for the header on
+            # the raw commit object. Deliberately not `git verify-commit`: for SSH
+            # signatures that needs a gpg.ssh.allowedSignersFile we do not have,
+            # and would fail on a perfectly good signature. GitHub does the real
+            # verification server-side against the registered key.
+            if ! git -C target cat-file commit HEAD | grep -q '^gpgsig'; then
+              echo "::error::Signing was configured but HEAD carries no signature."
+              exit 1
+            fi
+            echo "Commit is signed."
+          fi
+
           git -C target push
           echo "Published ${SOURCE_SHA:0:7} to ${TARGET_REPO}:"
           echo "  $subject"
+
+      - name: Remove signing key
+        if: always()
+        run: rm -f signing-key

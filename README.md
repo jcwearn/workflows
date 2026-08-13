@@ -48,10 +48,43 @@ jobs:
 | `ignore-file` | no | `.publicignore` | rsync `--exclude-from` file. **The job fails if it's missing** rather than publishing an unfiltered tree. Pass `''` to opt out deliberately |
 | `readme-override` | no | `''` | Path in the source repo to publish as the target's `README.md` |
 | `message-mode` | no | `passthrough` | `passthrough` replays upstream commit messages; `generic` publishes an opaque `sync: <short-sha>` |
+| `signer-name` | no | `''` | Committer name used when `SIGNING_KEY` is set |
+| `signer-email` | no | `''` | Committer email used when `SIGNING_KEY` is set. **Must be an email on the account owning the key** |
 | `gitleaks-version` | no | `8.30.1` | Pinned gitleaks release |
 | `gitleaks-sha256` | no | (matching) | Checksum for the pinned release |
 
-Secret: `DEPLOY_KEY` — SSH private key with write access to `target-repo`.
+Secrets:
+
+| Secret | Required | Description |
+|---|---|---|
+| `DEPLOY_KEY` | yes | SSH private key with write access to `target-repo` |
+| `SIGNING_KEY` | no | SSH private key registered on the account as a **signing** key. Without it, commits push unsigned |
+
+### Signed commits (the Verified badge)
+
+Supply `SIGNING_KEY` plus `signer-name`/`signer-email` and published commits get
+GitHub's **Verified** badge.
+
+The constraint to understand: **GitHub matches a signature to an account by the
+_committer_ email.** `github-actions[bot]` isn't an email on your account, so a
+bot-committed commit can never verify no matter how it's signed. The workflow
+therefore keeps the **author** as `github-actions[bot]` — the commit really is
+machine-made — and sets the **committer** to your identity, which GitHub renders as
+"github-actions[bot] authored and *you* committed".
+
+Two failure modes worth knowing:
+
+- **The key must be registered as a Signing Key**, not an Authentication key. GitHub's
+  "New SSH key" form has a Key type dropdown that defaults to Authentication. Wrong
+  type gives no error anywhere — commits just quietly never verify.
+- If `SIGNING_KEY` is set but `signer-email` is empty, **the job fails** rather than
+  pushing unsigned. After the commit is made, the workflow also checks that a
+  signature header actually attached and fails if not, so a misconfiguration surfaces
+  as a red run instead of a missing badge nobody notices.
+
+One signing key serves every repo pair; only the secret is per-repo. Note the blast
+radius is wider than the deploy keys: anyone holding it can sign commits that appear
+verified as you in *any* repo. Revoke from the account keys page.
 
 ### What it does
 

@@ -142,6 +142,35 @@ gh secret set PUBLIC_SYNC_DEPLOY_KEY -R "jcwearn/${REPO}" < /tmp/${REPO}-sync
 rm /tmp/${REPO}-sync /tmp/${REPO}-sync.pub   # never leave the private half on disk
 ```
 
+### Signing key (optional, once per account)
+
+Skip if you don't care about the Verified badge. One key covers every repo pair —
+only the secret is per-repo.
+
+```bash
+ssh-keygen -t ed25519 -f /tmp/public-sync-signing -N "" -C "public-sync signing"
+```
+
+Register the **public** half at Settings → SSH and GPG keys → New SSH key with
+**Key type: Signing Key**. Not Authentication — that's the default in the dropdown,
+produces no error anywhere, and commits simply never verify.
+
+Doing this in the browser deliberately avoids granting the CLI
+`admin:ssh_signing_key`, a scope that would let anything holding your gh token mint
+keys making commits look verified as you. (`gh ssh-key add --type signing` works if
+you'd rather.)
+
+```bash
+gh secret set PUBLIC_SYNC_SIGNING_KEY -R "jcwearn/${REPO}" < /tmp/public-sync-signing
+rm /tmp/public-sync-signing /tmp/public-sync-signing.pub
+```
+
+Then set `signer-name`/`signer-email` on the caller. **The email must belong to the
+account owning the key** — GitHub matches signatures to accounts by *committer*
+email, which is also why the workflow sets the committer to you while leaving the
+author as `github-actions[bot]`. A `<id>+<login>@users.noreply.github.com` address
+works and avoids publishing a real one; find the id with `gh api user --jq .id`.
+
 ## Phase 3 — Wire up the private repo
 
 Copy from `templates/`:
@@ -240,3 +269,4 @@ opaque `sync: <short-sha>` if a repo's history isn't suitable.
 | `actions/checkout` fails on target | Public repo created with no initial commit | `gh repo create --add-readme` |
 | Failed runs on the public repo | Actions enabled there | `gh api -X PUT .../actions/permissions -F enabled=false` |
 | Empty commits on unrelated merges | — | Already handled: the workflow no-ops when the filtered tree is unchanged |
+| Commits push fine but show no Verified badge | Key registered as Authentication instead of Signing, or committer email not on the account | Re-add as **Signing Key**; check `signer-email`. Diagnose with `gh api repos/OWNER/REPO/commits --jq '.[0].commit.verification'` |

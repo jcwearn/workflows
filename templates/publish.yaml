@@ -15,5 +15,12 @@ jobs:
     with:
       target-repo: jcwearn/<REPO>-public
       readme-override: .github/public-README.md
+      # Committer identity for signed commits. The author stays
+      # github-actions[bot]; the committer is what GitHub verifies against, so
+      # this must be an email tied to the account owning PUBLIC_SYNC_SIGNING_KEY.
+      signer-name: Jackson Wearn
+      signer-email: 2472105+jcwearn@users.noreply.github.com
     secrets:
       DEPLOY_KEY: ${{ secrets.PUBLIC_SYNC_DEPLOY_KEY }}
+      # Optional. Drop this line (and the signer-* inputs) to push unsigned.
+      SIGNING_KEY: ${{ secrets.PUBLIC_SYNC_SIGNING_KEY }}
