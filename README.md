@@ -2,6 +2,10 @@
 
 Reusable GitHub Actions workflows.
 
+> Onboarding a new repo to the public-snapshot pattern? Read **[RUNBOOK.md](RUNBOOK.md)** —
+> it covers the full sequence, the decision about whether a repo can be published
+> in place at all, and the failure modes hit so far.
+
 ## `public-sync.yaml`
 
 Publishes a filtered snapshot of a private repo to a public counterpart, on every
