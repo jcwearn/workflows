@@ -376,13 +376,19 @@ before the merge rather than as a failed release afterwards.
 ```yaml
 on:
   pull_request:
-    types: [opened, reopened, labeled, unlabeled, synchronize]
+    types: [opened, reopened, edited, labeled, unlabeled, synchronize]
     branches: [main]
 
 jobs:
   check:
     uses: jcwearn/workflows/.github/workflows/require-release-label.yaml@v1
 ```
+
+**Keep `edited` in that list.** It's what fires when a PR's base branch changes. Drop
+it and a stacked PR retargeted onto `main` after its parent merges never runs this
+check at all — every earlier event was filtered out by `branches: [main]` while the
+base was still the parent branch, and the retarget is the only thing that happens
+afterwards. This repo's own PR #7 hit exactly that.
 
 **Advisory only without branch protection**: a red check here does not block a merge.
 A PR merged without a label produces a red release run and no tag, which is the safe
