@@ -22,4 +22,12 @@
 secrets.yaml
 *.rendered.yaml
 
+# Installed dependencies. Never present in CI, where checkout only materializes
+# tracked files, so this changes nothing about what gets published. It is here
+# for the local dry run: without it, rsync copies the whole dependency tree --
+# 12,500 files on the first repo this was noticed on -- and the one check that
+# is meant to happen before the first sync becomes unreadable. Add the
+# equivalent for other ecosystems as needed (.venv/, vendor/, target/).
+node_modules/
+
 # Add repo-specific exclusions below

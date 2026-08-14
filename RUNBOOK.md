@@ -211,8 +211,17 @@ Test the filter locally before trusting it:
 ```bash
 mkdir -p /tmp/pubcheck
 rsync -a --delete --exclude=.git/ --exclude-from=.publicignore ./ /tmp/pubcheck/
+find /tmp/pubcheck -type f | wc -l     # sanity-check against `git ls-files | wc -l`
 gitleaks dir /tmp/pubcheck --redact --no-banner --exit-code 1; echo "exit $?"
 ```
+
+**Check that file count.** The dry run copies the working tree, not the index, so
+anything installed or built locally comes along — `node_modules/`, `.venv/`,
+`target/`. CI never sees them, because `actions/checkout` only materializes tracked
+files, so this is not a publishing risk. It is a *reading* risk: a count in the
+thousands means the output you were going to inspect is mostly dependencies, and the
+check silently stops being a check. If the count is far above `git ls-files | wc -l`,
+add the offending directory to `.publicignore` and re-run.
 
 **Then prove the gate fails closed** — an untested fail-closed gate is not a gate:
 
