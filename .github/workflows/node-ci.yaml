@@ -121,11 +121,7 @@ jobs:
       # that pass no extra-env never reach this step and are unaffected.
       - name: Apply extra-env
         if: inputs.extra-env != ''
-        # TEMPORARY: points at this branch so Phase 1.5 validation can resolve
-        # the action, which @v1 does not carry yet. MUST become @v1 before this
-        # PR merges -- a merged branch ref would silently keep resolving until
-        # the branch was deleted, then break every caller at once.
-        uses: jcwearn/workflows/.github/actions/extra-env@feat/node-ci-workflow
+        uses: jcwearn/workflows/.github/actions/extra-env@v1
         with:
           vars: ${{ inputs.extra-env }}
 
