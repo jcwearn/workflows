@@ -6,10 +6,48 @@
 |-------|--------|---------|-------|
 | A. Labels and seed tag | Complete | 2026-08-14 | 4 labels in `workflows`, `release:skip` added to both siblings. `v1.0.0` + `v1` tagged at `d053075`, Release created on `v1.0.0` only |
 | B. Consumers to `@v1` | Blocked | 2026-08-14 | Sequencing decision needed — see Handoff Notes |
-| C. Land the machinery | In Progress | 2026-08-14 | `ci.yaml` PR open; release machinery PR next |
+| C. Land the machinery | In Progress | 2026-08-14 | Split into C1 `ci.yaml`, C2 composite actions + tests, C3 the release workflows. C1 and C2 PRs open |
 | D. Docker repos | Not Started | — | `ansible-runner` first, then `withjoy-exporter` |
 
 ## Handoff Notes
+
+### Phase C was split three ways, because of how `uses: ./` resolves
+
+The approved plan kept the label and version logic inline in `release.yaml`.
+Extracting it so tests can exercise the real code ran into a GitHub constraint:
+**inside a reusable workflow called from another repo, `uses: ./...` resolves against
+the *caller's* checkout**, not against the repo holding the workflow. A shared script
+sitting in this repo is simply not on disk when `release.yaml` runs in
+`ansible-runner`.
+
+Composite actions are the fix — an action referenced as
+`jcwearn/workflows/.github/actions/next-version@v1` brings its own files, and
+`$GITHUB_ACTION_PATH` always points at them. No extra checkout, no token, no reliance
+on `github.job_workflow_sha` (whose documentation is ambiguous enough not to build on).
+
+That creates a bootstrap ordering requirement:
+
+1. **C1** — `ci.yaml` alone. *(merged / PR open)*
+2. **C2** — composite actions + scripts + tests, wired into `ci.yaml`. No workflow
+   references them yet, so nothing can break.
+3. **Manual step between C2 and C3.** After C2 merges, cut `v1.1.0` and move `v1`
+   using the RUNBOOK block. `@v1` must already contain `.github/actions/` before any
+   workflow references those actions at `@v1` — otherwise C3's own release run
+   resolves `@v1` to `d053075`, which has no actions directory, and goes red.
+4. **C3** — `release.yaml`, `require-release-label.yaml`, `self-release.yaml`,
+   `self-require-release-label.yaml`, plus the README/RUNBOOK/template/renovate edits.
+
+### Testing
+
+`tests/` runs the real scripts, not copies. Both suites are portable to bash 3.2
+deliberately — the runner has bash 5, but macOS ships 3.2, and a script that only
+executes in CI is a script nobody can test before pushing. That is why
+`release-label.sh` uses a read loop rather than `mapfile`.
+
+23 cases green locally and in CI. The two that matter most are regressions against the
+implementation being replaced: an unrecognised `release:*` suffix must fail loudly
+rather than become "bump nothing", and a moving `vX` alias must never be mistaken for
+the newest full triple.
 
 ### Phase B is blocked on a sequencing decision
 

@@ -42,3 +42,34 @@ jobs:
           # .github/workflows so actionlint would never find it on its own --
           # which makes it the file most likely to be copied broken.
           ./actionlint -color .github/workflows/*.yaml templates/publish.yaml
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # actionlint shellchecks `run:` blocks, but the composite actions keep
+      # their logic in standalone .sh files it never sees. shellcheck is
+      # preinstalled on ubuntu-latest.
+      - name: Run shellcheck
+        run: shellcheck .github/actions/*/*.sh tests/*.sh
+
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Run tests
+        run: |
+          set -euo pipefail
+          for t in tests/test-*.sh; do
+            echo "::group::$t"
+            bash "$t"
+            echo "::endgroup::"
+          done
