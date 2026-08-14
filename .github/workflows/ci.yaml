@@ -1,0 +1,44 @@
+name: CI
+
+# Dual-triggered on purpose. `pull_request` gates every change to this repo;
+# `workflow_call` lets self-release.yaml run the same definition as its
+# pre-tag verify step, so there is exactly one description of what "valid"
+# means rather than two that drift.
+
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Run actionlint
+        env:
+          # Pinned by checksum rather than by an action SHA, matching the
+          # gitleaks download in public-sync.yaml. Deliberately not annotated
+          # for Renovate: it would bump VERSION and leave SHA256 stale. That
+          # fails closed on the checksum, but it fails as a confusing red run
+          # rather than as a reviewable bump.
+          VERSION: "1.7.12"
+          SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+        run: |
+          set -euo pipefail
+          curl -fsSL -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz"
+          echo "${SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+
+          # templates/publish.yaml is passed explicitly. It is a real workflow
+          # that gets copied verbatim into other repos, but it lives outside
+          # .github/workflows so actionlint would never find it on its own --
+          # which makes it the file most likely to be copied broken.
+          ./actionlint -color .github/workflows/*.yaml templates/publish.yaml
