@@ -1,0 +1,22 @@
+name: Require Release Label
+
+# Two of these types are here for reasons that only show up in practice:
+#
+#   reopened -- reopening a PR that lost its label while closed would
+#     otherwise leave the last green check standing.
+#
+#   edited -- fires when a PR's base branch changes. Without it, a stacked PR
+#     retargeted onto main after its parent merges never runs this check at
+#     all: every earlier event was filtered out by `branches: [main]` while
+#     the base was still the parent branch, and the retarget itself is the
+#     only thing that happens afterwards. This repo's own PR #7 hit exactly
+#     that, and merged with no label check having run.
+
+on:
+  pull_request:
+    types: [opened, reopened, edited, labeled, unlabeled, synchronize]
+    branches: [main]
+
+jobs:
+  check:
+    uses: ./.github/workflows/require-release-label.yaml

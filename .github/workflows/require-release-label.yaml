@@ -1,0 +1,29 @@
+name: Require Release Label
+
+# Companion gate for release.yaml. Every PR carries exactly one of
+# release:major, release:minor, release:patch, release:skip -- skip included,
+# so "no release" is a decision someone made rather than a label someone forgot.
+#
+# Both halves call the same composite action, so the vocabulary is defined
+# once. That is the other reason the logic was extracted: two copies of a
+# four-line case, running on different events, is exactly the shape that drifts.
+#
+# Advisory: with no branch protection a red check here does not stop a merge.
+# What it buys is that the mistake is visible before the merge instead of
+# surfacing as a failed release afterwards.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Exactly one release label
+        uses: jcwearn/workflows/.github/actions/release-label@v1
+        with:
+          labels: ${{ toJson(github.event.pull_request.labels.*.name) }}

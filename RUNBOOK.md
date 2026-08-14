@@ -198,6 +198,10 @@ Copy from `templates/`:
 | `.publicignore` | rsync exclusions |
 | `.github/public-README.md` | Replaces the README publicly; states it's read-only |
 
+`templates/publish.yaml` pins `@v1`, which moves forward on every compatible
+release — so a repo wired up this way picks up fixes without a PR. See the
+[README's versioning section](README.md#versioning) for what counts as breaking.
+
 `.publicignore` should duplicate the sensitive parts of `.gitignore` even though
 `actions/checkout` only materializes tracked files. It keeps the filter correct
 when run locally against a dirty tree, and it still holds if one of those paths
@@ -286,6 +290,23 @@ opaque `sync: <short-sha>` if a repo's history isn't suitable.
   they aggregate into a map of the network. Prefer env-var defaults
   (`homeassistant.local`) over hardcoded addresses.
 
+## Reference: manual release, if self-release breaks
+
+This repo releases itself with the workflow it hosts, and `uses: ./` resolves
+against the run's own commit — so a PR that edits `release.yaml` is released *by*
+the edited version. Merge a broken one and it cannot cut its own fix. Recover by
+hand:
+
+```bash
+V=v1.2.3; SHA=$(git rev-parse origin/main)
+git tag -a "$V" -m "$V" "$SHA" && git push origin "refs/tags/$V"
+git tag -f -a v1 -m "v1 -> $V" "$SHA" && git push --force origin refs/tags/v1
+gh release create "$V" --verify-tag --title "$V" --generate-notes
+```
+
+Then fix forward. Don't delete the bad tag if a consumer may already have resolved
+it — cut the next patch instead.
+
 ## Failure modes seen so far
 
 | Symptom | Cause | Fix |
@@ -296,3 +317,5 @@ opaque `sync: <short-sha>` if a repo's history isn't suitable.
 | Failed runs on the public repo | Actions enabled there | `gh api -X PUT .../actions/permissions -F enabled=false` |
 | Empty commits on unrelated merges | — | Already handled: the workflow no-ops when the filtered tree is unchanged |
 | Commits push fine but show no Verified badge | Key registered as Authentication instead of Signing, or committer email not on the account | Re-add as **Signing Key**; check `signer-email`. Diagnose with `gh api repos/OWNER/REPO/commits --jq '.[0].commit.verification'` |
+| `error parsing called workflow ... workflow was not found` | The `v1` tag is missing or was deleted | `git ls-remote --tags https://github.com/jcwearn/workflows`, then re-create it at the newest `vX.Y.Z` |
+| Release run green through build, then 403 on `git push origin refs/tags/...` | Caller job omitted `permissions: contents: write`; the account default is `read` | Add the `permissions:` block to the job that has `uses:` |

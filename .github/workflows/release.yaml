@@ -1,0 +1,278 @@
+name: Release
+
+# Cuts a release for the calling repo when a labelled PR merges to main.
+#
+# The contract this file exists to enforce is the ORDER: nothing is tagged
+# until the artifact it names already exists. ansible-runner v0.1.29-v0.1.35
+# are git tags and GitHub Releases with no container image behind them --
+# seven releases over a month, unnoticed -- because the hand-rolled version it
+# replaces tagged first and built second. The job graph below cannot be wired
+# that way by a caller: `publish` needs `build`.
+#
+# The label and version logic lives in composite actions rather than inline
+# here, so tests/ can exercise it. They are referenced by full path because
+# `uses: ./...` inside a reusable workflow resolves against the CALLER's
+# checkout, where this repo's files do not exist.
+#
+# Callers MUST grant permissions on the calling job. This account's default
+# GITHUB_TOKEN permission is `read`, and a reusable workflow can only narrow
+# what the caller granted, never widen it -- so the `permissions:` blocks here
+# are a ceiling, not a grant. Symptom when omitted: green all the way through
+# build, then 403 on the tag push.
+#
+#   jobs:
+#     release:
+#       if: github.event.pull_request.merged == true
+#       permissions:
+#         contents: write      # git tags + GitHub Release
+#         packages: write      # only when `image` is set
+#       uses: jcwearn/workflows/.github/workflows/release.yaml@v1
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: >-
+          Full GHCR image to build and push, e.g. ghcr.io/jcwearn/foo. Empty
+          (the default) means the repo has no build step and the git ref is
+          the artifact, so the tag is cut directly.
+        required: false
+        default: ""
+        type: string
+      image-context:
+        description: "Docker build context, relative to the repo root"
+        required: false
+        default: "."
+        type: string
+      image-tag-prefix:
+        description: >-
+          Prepended to the semver image tags. Docker convention is no prefix,
+          which is the default. withjoy-exporter passes "v" because its
+          published tags have always been vX.Y.Z and k3s-cluster pins them by
+          string -- changing the shape would stall Renovate silently rather
+          than fail. A compatibility shim; drop it if that pin is rewritten.
+        required: false
+        default: ""
+        type: string
+      move-major-tag:
+        description: >-
+          Also publish a vX tag that is re-pointed at each release, the way
+          actions/checkout keeps v7 tracking the newest v7.x.x. Only useful
+          when something resolves this repo by git ref: Renovate follows the
+          moving tag to notice a new release and refresh a pinned digest.
+          Off by default because a repo whose artifact is a container image
+          is consumed by image tag, so a moving git tag there is created and
+          then never read.
+        required: false
+        default: false
+        type: boolean
+    outputs:
+      released:
+        description: "true when a version was published, false for release:skip"
+        value: ${{ jobs.plan.outputs.release }}
+      version:
+        description: "Tag published, e.g. v1.2.3. Empty when skipped."
+        value: ${{ jobs.plan.outputs.version }}
+
+permissions:
+  contents: read
+
+concurrency:
+  # github.repository is the CALLER's repo inside a reusable workflow, so this
+  # is one group per consuming repo. Never cancel: a cancelled release can
+  # leave an image pushed with no tag, or a tag pushed with no Release.
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.label.outputs.release }}
+      version: ${{ steps.version.outputs.version }}
+      semver: ${{ steps.version.outputs.semver }}
+      minor_series: ${{ steps.version.outputs.minor_series }}
+      major: ${{ steps.version.outputs.major }}
+      major_bare: ${{ steps.version.outputs.major_bare }}
+      previous: ${{ steps.version.outputs.previous }}
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - name: Resolve the merged commit
+        id: sha
+        env:
+          EVENT: ${{ github.event_name }}
+          MERGED: ${{ github.event.pull_request.merged }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ] || [ "$MERGED" != "true" ]; then
+            echo "::error::release.yaml must be called from 'on: pull_request: types: [closed]' with an 'if: github.event.pull_request.merged == true' guard."
+            exit 1
+          fi
+          # Deliberately not github.sha. On a closed pull_request that is the
+          # refs/pull/N/merge ref, which coincides with the commit that landed
+          # on main only for merge-commit merges. Under squash or rebase it
+          # does not, and the tag would name a commit reachable from nothing.
+          if [ -z "$MERGE_SHA" ] || [ "$MERGE_SHA" = "null" ]; then
+            echo "::error::pull_request.merge_commit_sha is empty; refusing to guess which commit to tag."
+            exit 1
+          fi
+          echo "sha=$MERGE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Read the release label
+        id: label
+        uses: jcwearn/workflows/.github/actions/release-label@v1
+        with:
+          labels: ${{ toJson(github.event.pull_request.labels.*.name) }}
+
+      - name: Check out
+        if: steps.label.outputs.release == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.sha.outputs.sha }}
+          # fetch-depth: 0 is load-bearing. next-version reads the tag list; a
+          # shallow clone carries no tags and every release would be v0.0.1.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compute the next version
+        id: version
+        if: steps.label.outputs.release == 'true'
+        uses: jcwearn/workflows/.github/actions/next-version@v1
+        with:
+          bump: ${{ steps.label.outputs.bump }}
+
+  build:
+    name: Build and push image
+    needs: plan
+    if: needs.plan.outputs.release == 'true' && inputs.image != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+
+      - name: Compose image tags
+        id: tags
+        env:
+          IMAGE: ${{ inputs.image }}
+          PREFIX: ${{ inputs.image-tag-prefix }}
+          SEMVER: ${{ needs.plan.outputs.semver }}
+          SERIES: ${{ needs.plan.outputs.minor_series }}
+          MAJOR: ${{ needs.plan.outputs.major_bare }}
+          SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # GHCR only. The login below authenticates with GITHUB_TOKEN, which
+          # is not a credential for anywhere else, so anything but ghcr.io
+          # would fail at push with a confusing error. Fail here instead.
+          case "$IMAGE" in
+            ghcr.io/*) ;;
+            *) echo "::error::image must be a ghcr.io/... reference, got '$IMAGE'."; exit 1 ;;
+          esac
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE}:${PREFIX}${SEMVER}"
+            echo "${IMAGE}:${PREFIX}${SERIES}"
+            echo "${IMAGE}:${PREFIX}${MAJOR}"
+            echo "${IMAGE}:sha-${SHA:0:7}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: ${{ inputs.image-context }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          # ignore-error=true is not cosmetic. The GHA cache export hitting the
+          # quota is what failed ansible-runner's build seven times running;
+          # without it a full cache turns every release red.
+          cache-to: type=gha,mode=max,ignore-error=true
+
+  publish:
+    name: Tag and release
+    needs: [plan, build]
+    # `build` is skipped when there is no image, and a skipped need would
+    # otherwise skip this job too -- hence !cancelled() rather than the
+    # default. The two explicit result checks are what keep a failed or
+    # cancelled build from being tagged anyway.
+    if: >-
+      ${{ !cancelled()
+          && needs.plan.outputs.release == 'true'
+          && needs.build.result != 'failure'
+          && needs.build.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 0
+          # Credentials are persisted on purpose here: this is the one job
+          # that pushes.
+
+      - name: Tag
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          MAJOR: ${{ needs.plan.outputs.major }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          MOVE_MAJOR: ${{ inputs.move-major-tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Immutable first, and deliberately not forced: if the ref somehow
+          # exists the push is rejected and the release stops here rather than
+          # rewriting something a consumer may already have pinned.
+          git tag -a "$VERSION" -m "$VERSION" "$SHA"
+          git push origin "refs/tags/${VERSION}"
+          echo "Pushed ${VERSION} -> ${SHA}"
+
+          if [ "$MOVE_MAJOR" = "true" ]; then
+            # Re-point the moving alias. The force is confined to this one
+            # refspec -- never a bare `git push --force`. Every immutable
+            # vX.Y.Z above stays exactly where it was.
+            git tag -f -a "$MAJOR" -m "${MAJOR} -> ${VERSION}" "$SHA"
+            git push --force origin "refs/tags/${MAJOR}"
+            echo "Moved ${MAJOR} -> ${VERSION}"
+          else
+            echo "move-major-tag is off; published ${VERSION} only."
+          fi
+
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          PREVIOUS: ${{ needs.plan.outputs.previous }}
+        run: |
+          set -euo pipefail
+          # --verify-tag: the tag was created above, so gh must attach to it and
+          # never invent one. Without it, a push that silently failed upstream
+          # would be papered over by gh creating the tag itself, at whatever
+          # commit main happened to be on.
+          args=(--verify-tag --title "$VERSION" --generate-notes)
+          if [ -n "$PREVIOUS" ]; then
+            args+=(--notes-start-tag "$PREVIOUS")
+          fi
+          gh release create "$VERSION" "${args[@]}"
+
+          # No Release is ever created for the moving vX tag. One on a tag that
+          # moves would make "latest release" jump backwards and would break
+          # --notes-start-tag on the next run.
