@@ -17,8 +17,18 @@ name: Release
 # Callers MUST grant permissions on the calling job. This account's default
 # GITHUB_TOKEN permission is `read`, and a reusable workflow can only narrow
 # what the caller granted, never widen it -- so the `permissions:` blocks here
-# are a ceiling, not a grant. Symptom when omitted: green all the way through
-# build, then 403 on the tag push.
+# are a ceiling, not a grant.
+#
+# There are two distinct symptoms, and the second one is easy to mispredict:
+#
+#   Under-granting a scope a job USES  -> the run goes green through build and
+#     403s on the tag push.
+#
+#   Under-granting a scope any nested job merely DECLARES -> the workflow does
+#     not run at all. "Invalid workflow file ... is requesting 'packages:
+#     write', but is only allowed 'packages: none'." This is checked
+#     statically, before any `if:` is evaluated, so a job that would have been
+#     skipped still invalidates the file. See the `build` job.
 #
 #   jobs:
 #     release:
@@ -74,8 +84,9 @@ on:
         description: "Tag published, e.g. v1.2.3. Empty when skipped."
         value: ${{ jobs.plan.outputs.version }}
 
-permissions:
-  contents: read
+# No workflow-level `permissions:` on purpose. `plan` and `publish` declare
+# their own, but `build` must inherit whatever the caller granted -- see the
+# comment on that job for why it cannot declare its own.
 
 concurrency:
   # github.repository is the CALLER's repo inside a reusable workflow, so this
@@ -88,6 +99,10 @@ jobs:
   plan:
     name: Plan
     runs-on: ubuntu-latest
+    # Safe to declare: every caller grants at least `contents: write`, and
+    # asking for less than you were granted is a narrowing, not a violation.
+    permissions:
+      contents: read
     outputs:
       release: ${{ steps.label.outputs.release }}
       version: ${{ steps.version.outputs.version }}
@@ -148,9 +163,21 @@ jobs:
     needs: plan
     if: needs.plan.outputs.release == 'true' && inputs.image != ''
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    # No `permissions:` here, deliberately, even though this job pushes to
+    # GHCR and clearly wants `packages: write`.
+    #
+    # GitHub validates a nested job's requested permissions against the
+    # caller's grant STATICALLY, at workflow-parse time -- before any `if:` is
+    # evaluated. So declaring `packages: write` here makes the whole workflow
+    # invalid for any caller that does not grant it, including callers where
+    # `image` is empty and this job never runs. That is not hypothetical: it
+    # is what broke this repo's own first release run.
+    #
+    # Inheriting instead means image callers grant `packages: write` and get
+    # it, and callers that build nothing are unaffected. The cost is that this
+    # job also inherits `contents: write` from an image caller rather than the
+    # `contents: read` it needs; there is no way to narrow one scope without
+    # declaring the other.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

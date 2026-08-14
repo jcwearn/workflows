@@ -115,7 +115,12 @@ makes "latest release" jump backwards and breaks `--notes-start-tag` on the next
 
 - All three release-scheme repos have `default_workflow_permissions: read`, so **every
   caller job must declare `permissions:`** — a reusable workflow can only narrow what
-  the caller granted. Symptom if omitted: green through build, 403 on the tag push.
+  the caller granted. Two symptoms, and the second one cost a broken release run:
+  under-granting a scope a job *uses* gives a 403 at the tag push; under-granting a
+  scope any nested job merely *declares* makes the workflow **invalid and unrunnable**,
+  because that check is static and runs before any `if:` is evaluated. A job that
+  would have been skipped still invalidates the file. Hence `build` declares no
+  `permissions:` and inherits the caller's.
 - 0 rulesets on all three repos, so nothing currently blocks the `vX` force-push. If a
   tag-protection ruleset is ever added, exempt `v[0-9]*`.
 - actionlint `1.7.12` checksum `8aca8db9…a3d8` verified against the real release
