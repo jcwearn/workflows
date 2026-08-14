@@ -1,0 +1,46 @@
+name: Next version
+description: Compute the next semver tag from the tags already in the repository.
+
+# Composite for the same reason as release-label: `uses: ./...` inside a
+# reusable workflow resolves against the caller's checkout, so the script has
+# to travel with the action.
+#
+# Reads tags from the workspace, so the calling job must have checked the
+# repository out with fetch-depth: 0 first -- a shallow clone carries no tags
+# and every release would come out as v0.0.1.
+
+inputs:
+  bump:
+    description: "major, minor, or patch"
+    required: true
+
+outputs:
+  version:
+    description: "Next tag, e.g. v1.2.3"
+    value: ${{ steps.compute.outputs.version }}
+  semver:
+    description: "Next version without the leading v, e.g. 1.2.3"
+    value: ${{ steps.compute.outputs.semver }}
+  minor_series:
+    description: "Major.minor series, e.g. 1.2"
+    value: ${{ steps.compute.outputs.minor_series }}
+  major:
+    description: "Moving major tag, e.g. v1"
+    value: ${{ steps.compute.outputs.major }}
+  major_bare:
+    description: "Major without the leading v, e.g. 1"
+    value: ${{ steps.compute.outputs.major_bare }}
+  previous:
+    description: "Previous tag, empty on the first release"
+    value: ${{ steps.compute.outputs.previous }}
+
+runs:
+  using: composite
+  steps:
+    - id: compute
+      shell: bash
+      env:
+        BUMP: ${{ inputs.bump }}
+      run: |
+        set -euo pipefail
+        "$GITHUB_ACTION_PATH/next-version.sh" >> "$GITHUB_OUTPUT"
