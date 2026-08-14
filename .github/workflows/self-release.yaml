@@ -1,0 +1,31 @@
+name: Release
+
+# workflows releasing itself with the reusable workflow it hosts.
+#
+# `uses: ./...` is a same-repo local reference, and it resolves against the
+# commit that triggered this run -- for a pull_request event, the merge ref,
+# which contains the PR's own changes. So a PR that edits release.yaml is
+# released BY the edited release.yaml. That is the dogfooding, and it is also
+# the hazard: merge a broken release.yaml and it cannot cut its own fix.
+# ci.yaml runs first for that reason, and RUNBOOK.md records the manual
+# tag-and-release commands for when it still goes wrong.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+jobs:
+  verify:
+    if: github.event.pull_request.merged == true
+    uses: ./.github/workflows/ci.yaml
+
+  # `image` is left unset: this repo builds nothing. The git ref IS the
+  # artifact, which is also why the moving v1 tag matters more here than it
+  # does for the image repos -- consumers resolve `@v1` at run time.
+  release:
+    needs: verify
+    if: github.event.pull_request.merged == true
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yaml

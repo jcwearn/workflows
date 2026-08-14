@@ -1,0 +1,13 @@
+name: Require Release Label
+
+# `reopened` is in the list deliberately: reopening a PR that lost its label
+# while closed would otherwise leave the last green check standing.
+
+on:
+  pull_request:
+    types: [opened, reopened, labeled, unlabeled, synchronize]
+    branches: [main]
+
+jobs:
+  check:
+    uses: ./.github/workflows/require-release-label.yaml

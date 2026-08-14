@@ -6,6 +6,43 @@ Reusable GitHub Actions workflows.
 > it covers the full sequence, the decision about whether a repo can be published
 > in place at all, and the failure modes hit so far.
 
+## Versioning
+
+Two kinds of tag:
+
+| Tag | Mutability | Purpose |
+|---|---|---|
+| `vX.Y.Z` | immutable | What a GitHub Release attaches to. Pin here if you want a ref that can never change under you |
+| `vX` | **moves** on every compatible release | What callers normally pin. `@v1` picks up fixes with no PR churn |
+
+Write `@v1`.
+
+### What counts as a version bump
+
+**Major** — anything that breaks a caller that changed nothing:
+
+- Removing or renaming an input or secret
+- Making an optional input required
+- Changing a default such that an unchanged caller now publishes something
+  different (`ignore-file`, `message-mode`, `readme-override`)
+- Changing the `permissions:` a caller must grant
+- Renaming the workflow file
+
+**Minor** — a new optional input or secret; new behaviour behind a default-off flag.
+
+**Patch** — bug fixes, doc changes, internal refactors with identical observable
+behaviour, and bumping the pinned `gitleaks-version` / `gitleaks-sha256` defaults.
+
+### The caveat the moving tag makes real
+
+A gitleaks default bump is a patch by the taxonomy above, but a newer gitleaks can
+newly flag a repo that was previously passing. Because `@v1` moves, that lands in
+every consumer with no PR to review.
+
+The failure is fail-closed — a red sync, nothing published — so the direction is
+right. But it will look like an unprovoked breakage. Pin `gitleaks-version`
+explicitly on any repo where that is unacceptable.
+
 ## `public-sync.yaml`
 
 Publishes a filtered snapshot of a private repo to a public counterpart, on every
@@ -32,7 +69,9 @@ on:
 
 jobs:
   publish:
-    uses: jcwearn/workflows/.github/workflows/public-sync.yaml@main
+    permissions:
+      contents: read
+    uses: jcwearn/workflows/.github/workflows/public-sync.yaml@v1
     with:
       target-repo: jcwearn/myrepo-public
       readme-override: .github/public-README.md
@@ -198,3 +237,158 @@ publish is deliberate.
 ```bash
 rsync -an --delete --exclude=.git/ --exclude-from=.publicignore ./ /tmp/pubcheck/
 ```
+
+## `release.yaml`
+
+Cuts a release for the calling repo when a labelled PR merges to `main`. Every PR
+carries exactly one of:
+
+| Label | Effect |
+|---|---|
+| `release:major` | `vX.Y.Z` → `v(X+1).0.0` |
+| `release:minor` | → `vX.(Y+1).0` |
+| `release:patch` | → `vX.Y.(Z+1)` |
+| `release:skip` | No release. Green run, no tag |
+
+`release:skip` exists so a docs-only or CI-only PR has a way out that isn't "forget
+the label and go red after the merge."
+
+### Usage
+
+For a repo whose artifact is the git ref — a reusable workflow, an action:
+
+```yaml
+# .github/workflows/release.yaml
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+jobs:
+  release:
+    if: github.event.pull_request.merged == true
+    permissions:
+      contents: write
+    uses: jcwearn/workflows/.github/workflows/release.yaml@v1
+```
+
+For a repo that ships a container image, add `image` and `packages: write`:
+
+```yaml
+jobs:
+  release:
+    if: github.event.pull_request.merged == true
+    permissions:
+      contents: write
+      packages: write
+    uses: jcwearn/workflows/.github/workflows/release.yaml@v1
+    with:
+      image: ghcr.io/jcwearn/myrepo
+```
+
+### Inputs
+
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `image` | no | `''` | GHCR image to build and push. Empty means the repo has no build step and the git ref is the artifact |
+| `image-context` | no | `.` | Docker build context, relative to the repo root |
+| `image-tag-prefix` | no | `''` | Prepended to the semver image tags. Docker convention is no prefix. Pass `v` only to preserve an existing published tag shape |
+
+Outputs: `released` (`true`/`false`) and `version` (e.g. `v1.2.3`, empty when skipped).
+
+**Secrets: none.** `GITHUB_TOKEN` only.
+
+**The caller job must declare `permissions:`.** This account's default
+`GITHUB_TOKEN` permission is `read`, and a reusable workflow can only *narrow* what
+the caller granted — the `permissions:` blocks inside `release.yaml` are a ceiling,
+not a grant. Omit them and the run goes green all the way through build, then 403s
+on the tag push.
+
+### What it publishes
+
+- An immutable `vX.Y.Z` tag, and a moving `vX` tag repointed at the same commit.
+- One GitHub Release, on `vX.Y.Z`. **Never on the moving tag** — a Release on a tag
+  that moves makes "latest release" jump backwards and breaks `--notes-start-tag`.
+- When `image` is set: `X.Y.Z`, `X.Y`, `X`, and `sha-<short>` image tags on GHCR.
+
+### Why build comes before tag
+
+```
+plan → build [skipped when image is empty] → publish
+```
+
+`publish` `needs: build`, and its condition excludes `failure` and `cancelled`, so
+**nothing is tagged until the artifact it names already exists.**
+
+This is the whole reason the workflow is centralised rather than copied. The
+implementation it replaces tagged first and built second, and `ansible-runner`
+`v0.1.29`–`v0.1.35` are the result: seven git tags and seven GitHub Releases with no
+container image behind them, over a month, unnoticed. On a failed build this ordering
+leaves an image with no tag instead — recoverable, because a retry recomputes the
+same version and overwrites the image from the same source.
+
+### Concurrency
+
+One group per calling repo, `cancel-in-progress: false`. A cancelled release can
+leave an image pushed with no tag, or a tag with no Release.
+
+Queue depth is 1, so merging three PRs in quick succession can cancel the middle run
+*while it is still pending*. Nothing partial happens — that PR simply never releases.
+Recover with "Re-run all jobs". Don't "fix" this by allowing cancellation; it trades
+a benign miss for a torn release.
+
+## `require-release-label.yaml`
+
+Fails a PR that doesn't carry exactly one release label, so the mistake is visible
+before the merge rather than as a failed release afterwards.
+
+```yaml
+on:
+  pull_request:
+    types: [opened, reopened, labeled, unlabeled, synchronize]
+    branches: [main]
+
+jobs:
+  check:
+    uses: jcwearn/workflows/.github/workflows/require-release-label.yaml@v1
+```
+
+**Advisory only without branch protection**: a red check here does not block a merge.
+A PR merged without a label produces a red release run and no tag, which is the safe
+direction.
+
+## Composite actions
+
+The two pieces of real logic live in `.github/actions/` rather than inline in the
+workflows, so `tests/` can exercise the code that actually runs instead of a copy of
+it. Both halves of the label check call the same action, so the vocabulary is defined
+once.
+
+| Action | Purpose |
+|---|---|
+| `release-label` | Resolve a PR's labels into a bump, or a decision not to release |
+| `next-version` | Compute the next semver tag from the tags already in the repo |
+
+They're usable on their own if you want the pieces without the workflow:
+
+```yaml
+- id: label
+  uses: jcwearn/workflows/.github/actions/release-label@v1
+  with:
+    labels: ${{ toJson(github.event.pull_request.labels.*.name) }}
+```
+
+Two things to know if you edit them:
+
+- **They're referenced by full path, not `./`.** Inside a reusable workflow called
+  from another repo, `uses: ./...` resolves against the *caller's* checkout, where
+  this repo's files don't exist. A composite action referenced as
+  `jcwearn/workflows/.github/actions/...@v1` brings its own files with it.
+- **`next-version` reads the tag list from the workspace**, so the calling job must
+  check out with `fetch-depth: 0` first. A shallow clone carries no tags and every
+  release comes out as `v0.0.1`.
+
+Run the tests with `bash tests/test-release-label.sh` and
+`bash tests/test-next-version.sh`. Both are portable to bash 3.2 on purpose — the
+runner has bash 5, but macOS ships 3.2, and a script that only executes in CI is a
+script nobody can test before pushing.

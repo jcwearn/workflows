@@ -11,7 +11,14 @@ on:
 
 jobs:
   publish:
-    uses: jcwearn/workflows/.github/workflows/public-sync.yaml@main
+    # Explicit even though `read` is all public-sync needs and all this account
+    # grants by default. A reusable workflow can only narrow what the caller
+    # granted, so the grant belongs here where it is visible.
+    permissions:
+      contents: read
+    # v1 moves forward on every compatible release. See the repo README for
+    # what counts as breaking.
+    uses: jcwearn/workflows/.github/workflows/public-sync.yaml@v1
     with:
       target-repo: jcwearn/<REPO>-public
       readme-override: .github/public-README.md

@@ -6,7 +6,7 @@
 |-------|--------|---------|-------|
 | A. Labels and seed tag | Complete | 2026-08-14 | 4 labels in `workflows`, `release:skip` added to both siblings. `v1.0.0` + `v1` tagged at `d053075`, Release created on `v1.0.0` only |
 | B. Consumers to `@v1` | Blocked | 2026-08-14 | Sequencing decision needed — see Handoff Notes |
-| C. Land the machinery | In Progress | 2026-08-14 | Split into C1 `ci.yaml`, C2 composite actions + tests, C3 the release workflows. C1 and C2 PRs open |
+| C. Land the machinery | In Progress | 2026-08-14 | Split into C1 `ci.yaml` (#5), C2 composite actions + tests (#6), C3 the release workflows (#7). All three PRs open and stacked; **a manual `v1.1.0` cut is required between C2 and C3** |
 | D. Docker repos | Not Started | — | `ansible-runner` first, then `withjoy-exporter` |
 
 ## Handoff Notes
