@@ -1,0 +1,44 @@
+name: CI
+
+# Copy to .github/workflows/ci.yml in a Node repo.
+#
+# Before this works, the repo must satisfy the contract node-ci.yaml relies on:
+#
+#   .node-version      pinned exact (e.g. 24.19.0), not a range
+#   package-lock.json  present
+#   scripts            format:check, lint, typecheck, test, build
+#
+# A repo with no test suite still declares a real `test` script --
+# `vitest run --passWithNoTests` -- rather than the shared workflow growing a
+# way to skip the step. See the header of node-ci.yaml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ci:
+    # Explicit even though `read` is all node-ci needs and all this account
+    # grants by default. A reusable workflow can only narrow what the caller
+    # granted, so the grant belongs here where it is visible.
+    permissions:
+      contents: read
+    # Renovate pins this to a digest on its next run, leaving `# v1` behind as
+    # the record of what to follow. Write `@v1` with no trailing comment; the
+    # comment belongs on a digest, where it says which tag the digest came
+    # from. See the repo README for what counts as breaking.
+    uses: jcwearn/workflows/.github/workflows/node-ci.yaml@v1
+    # Both inputs are optional; delete this block entirely if neither applies.
+    with:
+      # Default is 10. Raise it for a long build or a browser-driven suite.
+      timeout-minutes: 10
+      # Build-time switches the repo's own scripts already read, KEY=value per
+      # line. Configuration only -- this cannot introduce a step.
+      # extra-env: SKIP_RESUME_FETCH=1
+
+  # Bespoke steps do NOT belong above. Give them their own job here, or their
+  # own workflow file -- they then run in parallel with the shared core rather
+  # than extending it. borderline's Chrome-driven layout suite and its
+  # generated-data drift check are the worked example.

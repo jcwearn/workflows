@@ -1,0 +1,169 @@
+name: Node CI
+
+# The universal core of a Node repo's checks: install, format, lint, typecheck,
+# test, build. Deliberately nothing else.
+#
+# This file accepts CONFIGURATION, NEVER CODE. `extra-env` can only activate
+# behaviour a caller's own committed scripts already implement. A steps-shaped
+# input cannot exist anyway -- workflow_call inputs are boolean, number, or
+# string and nothing else -- and the only way to fake one is to run a
+# caller-supplied string as shell, which is a shared workflow that does
+# whatever it is told rather than a shared workflow.
+#
+# Repos with bespoke steps keep a SECOND LOCAL workflow rather than adding a
+# flag here. borderline's layout suite and generated-data drift check are the
+# case that set the precedent: they are ~40 lines that mean nothing in the
+# other repos, and splitting them out runs them in PARALLEL with this job --
+# so the repo that looked like it needed flags got faster by not having them.
+#
+# The alternative -- a boolean per step -- was rejected because `lint: false`
+# has no expiry date. The repo that sets it to unblock a migration stays
+# unlinted forever, and this file grows a permanent flag describing a
+# temporary state. release.yaml is the house precedent pointing the other way:
+# four inputs for three consumers, and every one of them names an artifact
+# rather than a step.
+#
+# CONTRACT, not inputs. Every one of these is enforced by a tool that already
+# fails with a good message, which is why none of them is a parameter:
+#
+#   .node-version exists, pinned exact  -> setup-node errors without it
+#   package-lock.json exists            -> npm ci
+#   scripts: format:check, lint, typecheck, test, build
+#                                       -> npm run exits 1 naming the script
+#
+# A repo with no tests satisfies the contract honestly with
+# `"test": "vitest run --passWithNoTests"` rather than this file growing a
+# `test: false`. The script is real and states the repo's actual position; a
+# skip flag would hide it, and would outlive the reason it was added.
+
+on:
+  workflow_call:
+    inputs:
+      timeout-minutes:
+        description: >-
+          Job timeout. Raise it for repos whose build or suite is genuinely
+          long -- borderline and anupamaandjackson both want 15.
+        required: false
+        default: 10
+        type: number
+      extra-env:
+        description: >-
+          Environment variables to set for the whole job, KEY=value, one per
+          line. For build-time switches a repo's own scripts already read.
+
+          This exists for jackson-wearn's SKIP_RESUME_FETCH, and the obvious
+          ways to avoid it were checked and fail: scripts/fetch-resume.ts is
+          reached both from `prebuild` (must skip in CI) and from
+          `resume:fetch`, which refresh-resume.yml runs INSIDE Actions and
+          must not skip -- so GITHUB_ACTIONS cannot distinguish them. CI=true
+          cannot either, because Cloudflare Pages sets it and Pages must
+          fetch. The variable carries information no ambient variable does.
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # github.workflow and github.ref are the CALLER's inside a reusable
+  # workflow, and concurrency groups are already scoped per repo -- so this is
+  # one group per calling workflow per ref, which is what we want. Callers
+  # must NOT also declare their own; two groups for one logical run means the
+  # outer one holds a slot while the inner one queues behind it.
+  group: node-ci-${{ github.workflow }}-${{ github.ref }}
+  # Superseded pull request runs are noise. Every commit on main gets checked,
+  # because nothing else is watching it.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  check:
+    name: Format, lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Nothing in this job pushes. The lockfile check reads the tree and
+          # compares; it never writes a ref.
+          persist-credentials: false
+
+      # Reads .node-version, which is pinned exact so a new 24.x release
+      # cannot change what CI runs without a commit saying so. Cloudflare
+      # Pages reads the same file, so for the repos deployed there this also
+      # keeps CI and the deploy build on one Node.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: '.node-version'
+          cache: 'npm'
+
+      # Applied before anything else runs, so every subsequent step sees it.
+      # Job-wide rather than only on `build`: the scope a variable applies to
+      # should not depend on which step someone guessed would need it.
+      #
+      # The validation lives in a composite action rather than inline here, so
+      # tests/test-extra-env.sh exercises the code that actually runs. This is
+      # the one place a caller's string reaches something this workflow
+      # executes, which makes it exactly the code worth testing -- writing the
+      # test is what found that a malformed line used to leave the lines before
+      # it already appended to $GITHUB_ENV.
+      #
+      # Referenced by full path, not `./`: inside a reusable workflow that
+      # resolves against the CALLER's checkout, where this repo's files do not
+      # exist.
+      #
+      # BOOTSTRAP, only relevant before this ships: @v1 does not contain
+      # extra-env until the release that adds it moves the tag. Validating this
+      # workflow from a branch SHA therefore has to point this ref at the same
+      # SHA, then flip it back to @v1 before merging -- otherwise the step
+      # resolves against the previous v1 and fails to find the action. Callers
+      # that pass no extra-env never reach this step and are unaffected.
+      - name: Apply extra-env
+        if: inputs.extra-env != ''
+        uses: jcwearn/workflows/.github/actions/extra-env@v1
+        with:
+          vars: ${{ inputs.extra-env }}
+
+      # npm ci already fails when package.json and the lockfile disagree about
+      # DECLARED dependencies. This catches the narrower case it cannot see: a
+      # lockfile that satisfies package.json but is not what npm install would
+      # produce -- hand-edited, or a stale transitive resolution left behind.
+      # Most lockfile changes in these repos are Renovate's, which makes it
+      # worth checking everywhere rather than in the one repo that thought of
+      # it.
+      #
+      # Safe to run unconditionally ONLY because .node-version is mandatory:
+      # pinning Node pins the npm bundled with it, so a lockfile-format change
+      # can only arrive attached to a deliberate .node-version bump that
+      # someone is already reading. Make the pin optional and this check
+      # becomes a time bomb on GitHub's runner-image schedule.
+      - name: Lockfile is what npm would write
+        run: |
+          set -euo pipefail
+          npm install --package-lock-only --ignore-scripts
+          if ! git diff --exit-code package-lock.json; then
+            echo "::error::package-lock.json is not what npm install produces. Run 'npm install' and commit the result."
+            exit 1
+          fi
+
+      - name: Install
+        run: npm ci
+
+      - name: Format
+        run: npm run format:check
+
+      - name: Lint
+        run: npm run lint
+
+      # Redundant with the build's own `tsc -b`, but near-free once the build
+      # info is warm, and a type error reads as a type error rather than as a
+      # failed build.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build

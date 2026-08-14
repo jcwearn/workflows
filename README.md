@@ -267,6 +267,105 @@ publish is deliberate.
 rsync -an --delete --exclude=.git/ --exclude-from=.publicignore ./ /tmp/pubcheck/
 ```
 
+## `node-ci.yaml`
+
+The universal core of a Node repo's checks — install, format, lint, typecheck, test,
+build — as one job, in that order.
+
+### Usage
+
+```yaml
+# .github/workflows/ci.yml
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ci:
+    permissions:
+      contents: read
+    uses: jcwearn/workflows/.github/workflows/node-ci.yaml@v1
+```
+
+Start from `templates/ci-node.yaml`.
+
+### Inputs
+
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `timeout-minutes` | no | `10` | Job timeout. Raise for a long build or a browser-driven suite |
+| `extra-env` | no | `''` | `KEY=value` per line, set for the whole job. Rejects `GITHUB_*`/`ACTIONS_*` and anything that isn't `KEY=value` |
+
+**Secrets: none.** `GITHUB_TOKEN` only, at `contents: read`.
+
+### The contract
+
+Most of what this workflow needs is not an input, because a tool already fails with a
+better message than a parameter default could:
+
+| Requirement | What enforces it |
+|---|---|
+| `.node-version`, pinned exact | `setup-node` errors on a missing `node-version-file` |
+| `package-lock.json` | `npm ci` |
+| scripts `format:check`, `lint`, `typecheck`, `test`, `build` | `npm run` exits 1 naming the missing script |
+
+**Every input not added is a repo that conforms instead.** `world-clock` gained a
+`typecheck` script rather than this file gaining a `typecheck-command`.
+
+A repo with no test suite satisfies the contract honestly with
+`"test": "vitest run --passWithNoTests"` rather than this file growing a `test: false`.
+The script is real, runs the real runner, and states the repo's actual position — which
+a skip flag would hide, and which would outlive the reason it was added.
+
+### Configuration, never code
+
+`extra-env` can only activate behaviour a caller's own committed scripts already
+implement. There is deliberately no way to inject a step, and there could not be one:
+`workflow_call` inputs are `boolean`, `number`, or `string` and nothing else. The only
+way to fake it is running a caller-supplied string as shell — one `run:` block with no
+`uses:`, no per-step `if:`, no step names in the log, and a shared workflow that executes
+whatever it is handed.
+
+`extra-env` exists for exactly one case, and the ways around it were checked and fail.
+`jackson-wearn`'s build needs `SKIP_RESUME_FETCH=1`, which cannot be inferred from
+`GITHUB_ACTIONS` (its `resume:fetch` script runs *inside* Actions from
+`refresh-resume.yml` and must not skip) nor from `CI` (Cloudflare Pages sets it, and
+Pages must fetch).
+
+### Bespoke steps go in a local workflow
+
+Not here, and not behind a flag. `lint: false` has no expiry date — the repo that sets it
+to unblock a migration stays unlinted forever, and this file carries a permanent flag
+describing a temporary state.
+
+The worked example is `borderline`: its Chrome-driven layout suite and its generated-data
+drift check are ~40 lines that mean nothing in the other repos. As a local
+`ci-extras.yml` they run **in parallel** with the shared job instead of extending it, so
+the repo that looked like it needed flags got *faster* by not having them. Splitting
+bespoke work out of a serial job is a speedup, not a tax.
+
+### The lockfile check
+
+`npm ci` already fails when `package.json` and the lockfile disagree about *declared*
+dependencies. The extra check here catches the narrower case it cannot see: a lockfile
+that satisfies `package.json` but isn't what `npm install` would produce — hand-edited,
+or a stale transitive resolution. Most lockfile changes in these repos are Renovate's,
+which is why it runs everywhere rather than in the one repo that thought of it.
+
+It is safe unconditionally **only because `.node-version` is mandatory.** Pinning Node
+pins the npm bundled with it, so a lockfile-format change can only arrive attached to a
+deliberate `.node-version` bump someone is already reading. Make the pin optional and
+this check becomes a time bomb on GitHub's runner-image schedule.
+
+### Concurrency
+
+Declared inside this workflow as `node-ci-<caller workflow>-<ref>`, cancelling superseded
+pull request runs but never runs on `main`. **Callers must not declare their own
+`concurrency:`** — two groups for one logical run means the outer one holds a slot while
+the inner one queues behind it.
+
 ## `release.yaml`
 
 Cuts a release for the calling repo when a labelled PR merges to `main`. Every PR
@@ -408,7 +507,7 @@ direction.
 
 ## Composite actions
 
-The two pieces of real logic live in `.github/actions/` rather than inline in the
+The pieces of real logic live in `.github/actions/` rather than inline in the
 workflows, so `tests/` can exercise the code that actually runs instead of a copy of
 it. Both halves of the label check call the same action, so the vocabulary is defined
 once.
@@ -417,6 +516,13 @@ once.
 |---|---|
 | `release-label` | Resolve a PR's labels into a bump, or a decision not to release |
 | `next-version` | Compute the next semver tag from the tags already in the repo |
+| `extra-env` | Validate `KEY=value` lines and export them to the job environment |
+
+`extra-env` is the newest and makes the case for the rule plainly: it is the one place
+a caller's string reaches something a shared workflow executes, and writing
+`tests/test-extra-env.sh` against the real script is what found that a malformed line
+used to leave the lines *before* it already appended to `$GITHUB_ENV`. Inline in the
+workflow, that bug had nowhere to be caught.
 
 They're usable on their own if you want the pieces without the workflow:
 
