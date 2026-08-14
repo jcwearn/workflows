@@ -331,8 +331,20 @@ Outputs: `released` (`true`/`false`) and `version` (e.g. `v1.2.3`, empty when sk
 **The caller job must declare `permissions:`.** This account's default
 `GITHUB_TOKEN` permission is `read`, and a reusable workflow can only *narrow* what
 the caller granted — the `permissions:` blocks inside `release.yaml` are a ceiling,
-not a grant. Omit them and the run goes green all the way through build, then 403s
-on the tag push.
+not a grant.
+
+Two symptoms, and the second is the one that surprises people:
+
+| Under-granted scope | Symptom |
+|---|---|
+| One a job actually **uses** | Run goes green through build, then 403s on the tag push |
+| One any nested job merely **declares** | `Invalid workflow file … is requesting 'packages: write', but is only allowed 'packages: none'` — the workflow doesn't run at all |
+
+The second is checked **statically, before any `if:` is evaluated**, so a job that
+would have been skipped still invalidates the file. That's why the `build` job
+declares no `permissions:` of its own and inherits the caller's instead — otherwise
+every caller that builds no image would still have to grant `packages: write` to
+satisfy a job that never runs. This repo's own first release run is what found it.
 
 ### What it publishes
 
