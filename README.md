@@ -8,14 +8,38 @@ Reusable GitHub Actions workflows.
 
 ## Versioning
 
-Two kinds of tag:
+Two kinds of tag, the same shape `actions/checkout` publishes:
 
 | Tag | Mutability | Purpose |
 |---|---|---|
-| `vX.Y.Z` | immutable | What a GitHub Release attaches to. Pin here if you want a ref that can never change under you |
-| `vX` | **moves** on every compatible release | What callers normally pin. `@v1` picks up fixes with no PR churn |
+| `vX.Y.Z` | immutable | What a GitHub Release attaches to |
+| `vX` | **re-pointed** at each compatible release | Tracks the newest `vX.Y.Z`, so tooling can tell a release happened |
 
-Write `@v1`.
+### How to consume it
+
+**Pin the digest, comment the tag** — the same way every other action in these repos
+is pinned:
+
+```yaml
+uses: jcwearn/workflows/.github/workflows/public-sync.yaml@d05307571ec735cdd30d60377db0fff881bb78e2 # v1
+```
+
+Write `@v1` and let Renovate resolve it, or paste the digest yourself. The comment is
+not decoration: it records which tag the digest came from, and it's how Renovate knows
+to watch `v1` and open a PR when a release moves it.
+
+This is why the moving tag exists even though nothing resolves `@v1` at run time. A
+digest pin with nothing tracking it is a dependency that silently never updates.
+
+For comparison, `actions/checkout` right now:
+
+```
+9c091bb…  refs/tags/v7.0.0     frozen
+3d3c42e5  refs/tags/v7.0.1     frozen
+3d3c42e5  refs/tags/v7         currently tracking v7.0.1
+```
+
+`@3d3c42e5… # v7` is a pin to a specific commit *and* a statement about what to follow.
 
 ### What counts as a version bump
 
@@ -33,15 +57,18 @@ Write `@v1`.
 **Patch** — bug fixes, doc changes, internal refactors with identical observable
 behaviour, and bumping the pinned `gitleaks-version` / `gitleaks-sha256` defaults.
 
-### The caveat the moving tag makes real
+### What digest pinning buys you here
 
-A gitleaks default bump is a patch by the taxonomy above, but a newer gitleaks can
-newly flag a repo that was previously passing. Because `@v1` moves, that lands in
-every consumer with no PR to review.
+A `gitleaks-version` default bump is a patch by the taxonomy above, but a newer
+gitleaks can newly flag a repo that was previously passing. That would be an
+unpleasant surprise if it arrived automatically.
 
-The failure is fail-closed — a red sync, nothing published — so the direction is
-right. But it will look like an unprovoked breakage. Pin `gitleaks-version`
-explicitly on any repo where that is unacceptable.
+It doesn't. Because consumers pin a digest, every release — patch included — arrives
+as a Renovate PR you can read and merge on your own schedule. The moving `v1` tag is
+what triggers that PR; it isn't what applies the change.
+
+A repo that wants to opt out of even that can pin `gitleaks-version` explicitly rather
+than inheriting the default.
 
 ## `public-sync.yaml`
 
@@ -71,6 +98,8 @@ jobs:
   publish:
     permissions:
       contents: read
+    # Write @v1 and let Renovate pin it to a digest on its next run, or paste
+    # the digest yourself. Either way the trailing comment must say v1.
     uses: jcwearn/workflows/.github/workflows/public-sync.yaml@v1
     with:
       target-repo: jcwearn/myrepo-public
@@ -293,6 +322,7 @@ jobs:
 | `image` | no | `''` | GHCR image to build and push. Empty means the repo has no build step and the git ref is the artifact |
 | `image-context` | no | `.` | Docker build context, relative to the repo root |
 | `image-tag-prefix` | no | `''` | Prepended to the semver image tags. Docker convention is no prefix. Pass `v` only to preserve an existing published tag shape |
+| `move-major-tag` | no | `false` | Also publish a `vX` tag re-pointed at each release. Turn on when something resolves the repo by git ref, so Renovate has a tag to follow. Leave off for image repos — they're consumed by image tag, so the git tag would never be read |
 
 Outputs: `released` (`true`/`false`) and `version` (e.g. `v1.2.3`, empty when skipped).
 
@@ -306,9 +336,10 @@ on the tag push.
 
 ### What it publishes
 
-- An immutable `vX.Y.Z` tag, and a moving `vX` tag repointed at the same commit.
-- One GitHub Release, on `vX.Y.Z`. **Never on the moving tag** — a Release on a tag
-  that moves makes "latest release" jump backwards and breaks `--notes-start-tag`.
+- An immutable `vX.Y.Z` tag.
+- One GitHub Release, on `vX.Y.Z`. **Never on a moving tag** — a Release on a tag that
+  moves makes "latest release" jump backwards and breaks `--notes-start-tag`.
+- With `move-major-tag: true`: a `vX` tag re-pointed at the same commit.
 - When `image` is set: `X.Y.Z`, `X.Y`, `X`, and `sha-<short>` image tags on GHCR.
 
 ### Why build comes before tag

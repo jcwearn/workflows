@@ -20,12 +20,15 @@ jobs:
     if: github.event.pull_request.merged == true
     uses: ./.github/workflows/ci.yaml
 
-  # `image` is left unset: this repo builds nothing. The git ref IS the
-  # artifact, which is also why the moving v1 tag matters more here than it
-  # does for the image repos -- consumers resolve `@v1` at run time.
+  # `image` is left unset: this repo builds nothing, so the git ref IS the
+  # artifact. That is also why move-major-tag is on here and off by default
+  # everywhere else -- consumers pin a digest resolved from v1, and Renovate
+  # follows that moving tag to notice a release and open the bump PR.
   release:
     needs: verify
     if: github.event.pull_request.merged == true
     permissions:
       contents: write
     uses: ./.github/workflows/release.yaml
+    with:
+      move-major-tag: true

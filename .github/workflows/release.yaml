@@ -54,6 +54,18 @@ on:
         required: false
         default: ""
         type: string
+      move-major-tag:
+        description: >-
+          Also publish a vX tag that is re-pointed at each release, the way
+          actions/checkout keeps v7 tracking the newest v7.x.x. Only useful
+          when something resolves this repo by git ref: Renovate follows the
+          moving tag to notice a new release and refresh a pinned digest.
+          Off by default because a repo whose artifact is a container image
+          is consumed by image tag, so a moving git tag there is created and
+          then never read.
+        required: false
+        default: false
+        type: boolean
     outputs:
       released:
         description: "true when a version was published, false for release:skip"
@@ -220,6 +232,7 @@ jobs:
           VERSION: ${{ needs.plan.outputs.version }}
           MAJOR: ${{ needs.plan.outputs.major }}
           SHA: ${{ needs.plan.outputs.sha }}
+          MOVE_MAJOR: ${{ inputs.move-major-tag }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -232,11 +245,16 @@ jobs:
           git push origin "refs/tags/${VERSION}"
           echo "Pushed ${VERSION} -> ${SHA}"
 
-          # Only now the moving alias, and the force is confined to this one
-          # refspec -- never a bare `git push --force`.
-          git tag -f -a "$MAJOR" -m "${MAJOR} -> ${VERSION}" "$SHA"
-          git push --force origin "refs/tags/${MAJOR}"
-          echo "Moved ${MAJOR} -> ${VERSION}"
+          if [ "$MOVE_MAJOR" = "true" ]; then
+            # Re-point the moving alias. The force is confined to this one
+            # refspec -- never a bare `git push --force`. Every immutable
+            # vX.Y.Z above stays exactly where it was.
+            git tag -f -a "$MAJOR" -m "${MAJOR} -> ${VERSION}" "$SHA"
+            git push --force origin "refs/tags/${MAJOR}"
+            echo "Moved ${MAJOR} -> ${VERSION}"
+          else
+            echo "move-major-tag is off; published ${VERSION} only."
+          fi
 
       - name: GitHub Release
         env:

@@ -49,6 +49,25 @@ implementation being replaced: an unrecognised `release:*` suffix must fail loud
 rather than become "bump nothing", and a moving `vX` alias must never be mistaken for
 the newest full triple.
 
+### Consumption is digest pinning, not a floating `@v1`
+
+Revised after review. Consumers pin a digest with a `# v1` comment — the same shape as
+every other action in these repos (`actions/checkout@3d3c42e5… # v7`). The four
+`pinDigests: false` Renovate rules were **removed**: they existed only to keep `@v1`
+floating, and they opted these repos out of their own house convention.
+
+The moving `v1` tag still matters, and this is the part worth not forgetting: **it is
+what Renovate follows to notice a release and open the bump PR.** A digest pin with no
+tag tracking it is a dependency that silently never updates. `v1` triggers the PR; it
+is not what applies the change.
+
+Producer and consumer are separate decisions, and they are not in tension —
+`actions/checkout` publishes a moving `v7` *and* is consumed as a pinned digest.
+
+`move-major-tag` is an input, default `false`. `workflows` sets it `true`.
+`ansible-runner` and `withjoy-exporter` leave it off: their artifact is a container
+image consumed by image tag, so a moving git tag there would be created and never read.
+
 ### Phase B: read remote state, not local branches
 
 An earlier pass called Phase B blocked, on the basis that four consumer repos had
