@@ -181,9 +181,12 @@ gh secret set PUBLIC_SYNC_SIGNING_KEY -R "jcwearn/${REPO}" < ~/.ssh/public-sync-
 
 Then set `signer-name`/`signer-email` on the caller. **The email must belong to the
 account owning the key** — GitHub matches signatures to accounts by *committer*
-email, which is also why the workflow sets the committer to you while leaving the
-author as `github-actions[bot]`. A `<id>+<login>@users.noreply.github.com` address
-works and avoids publishing a real one; find the id with `gh api user --jq .id`.
+email, which is also why the workflow sets the committer to you. The author is
+passed through from the upstream commit. A `<id>+<login>@users.noreply.github.com`
+address works and avoids publishing a real one; find the id with
+`gh api user --jq .id`. Note that GitHub only collapses "X authored and Y committed"
+into one line when the two are byte-identical, so matching this to the address your
+own commits are authored with is what makes them read as a single name.
 
 ## Phase 3 — Wire up the private repo
 
