@@ -15,9 +15,11 @@ jobs:
     with:
       target-repo: jcwearn/<REPO>-public
       readme-override: .github/public-README.md
-      # Committer identity for signed commits. The author stays
-      # github-actions[bot]; the committer is what GitHub verifies against, so
-      # this must be an email tied to the account owning PUBLIC_SYNC_SIGNING_KEY.
+      # Committer identity for signed commits. The author comes from the
+      # upstream commit; the committer is what GitHub verifies against, so this
+      # must be an email tied to the account owning PUBLIC_SYNC_SIGNING_KEY.
+      # Match it to the address your own commits are authored with and GitHub
+      # renders them as one name instead of "X authored and X committed".
       signer-name: Jackson Wearn
       signer-email: 2472105+jcwearn@users.noreply.github.com
     secrets:

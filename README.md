@@ -68,9 +68,20 @@ GitHub's **Verified** badge.
 The constraint to understand: **GitHub matches a signature to an account by the
 _committer_ email.** `github-actions[bot]` isn't an email on your account, so a
 bot-committed commit can never verify no matter how it's signed. The workflow
-therefore keeps the **author** as `github-actions[bot]` — the commit really is
-machine-made — and sets the **committer** to your identity, which GitHub renders as
-"github-actions[bot] authored and *you* committed".
+therefore sets the **committer** to your identity.
+
+The **author** is passed through from upstream, so a Renovate bump publishes as
+Renovate rather than as the sync bot. GitHub renders "renovate-bot[bot] authored
+and *you* committed". When a single sync spans commits by more than one author it
+falls back to `github-actions[bot]`, since the result is genuinely collective and
+crediting the newest commit's author would hand one person everyone else's work.
+
+Author and committer are independent, so passing the author through cannot affect
+verification. One consequence worth knowing: GitHub collapses the two into a single
+line only when they are byte-identical, so if you want your own commits to read
+"*you* authored" alone, `signer-email` has to be the same address your commits are
+authored with — `you@users.noreply.github.com` and `<id>+you@users.noreply.github.com`
+resolve to the same account but are not the same string.
 
 Two failure modes worth knowing:
 
