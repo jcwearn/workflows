@@ -121,7 +121,7 @@ jobs:
       # that pass no extra-env never reach this step and are unaffected.
       - name: Apply extra-env
         if: inputs.extra-env != ''
-        uses: jcwearn/workflows/.github/actions/extra-env@v1
+        uses: jcwearn/workflows/.github/actions/extra-env@623f2a008cb8a83ab2bc1868631aa0486ed84bd6 # v1
         with:
           vars: ${{ inputs.extra-env }}
 
