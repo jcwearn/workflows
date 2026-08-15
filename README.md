@@ -272,6 +272,148 @@ publish is deliberate.
 rsync -an --delete --exclude=.git/ --exclude-from=.publicignore ./ /tmp/pubcheck/
 ```
 
+## `go-ci.yaml`
+
+The Go counterpart to `node-ci.yaml` and `python-ci.yaml`, and deliberately the same
+shape: check the module is tidy, build it, lint it, run the tests — using the tools and
+versions the repo itself declares.
+
+### Usage
+
+```yaml
+# .github/workflows/ci.yml
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ci:
+    permissions:
+      contents: read
+    uses: jcwearn/workflows/.github/workflows/go-ci.yaml@v1
+```
+
+Start from `templates/ci-go.yaml`.
+
+### Inputs
+
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `timeout-minutes` | no | `10` | Job timeout. Raise for a suite that stands up a real dependency, or a tree large enough that `-race` is slow |
+
+**Secrets: none.** `GITHUB_TOKEN` only, at `contents: read`.
+
+### The contract
+
+| Requirement | What enforces it |
+|---|---|
+| `go.mod` | `setup-go` errors on a missing `go-version-file` |
+| `.golangci-lint-version`, pinned exact | `golangci-lint-action` errors naming the missing path |
+| `.golangci.yml` | nothing — but golangci-lint falls back to its defaults, which is a weaker check than any repo here wants. `templates/ci-go.yaml` documents the minimum |
+| tests discoverable by `go test ./...` | `go test` |
+
+A repo with no test suite satisfies the contract as it stands: `go test ./...` is green on
+a module with no test files and prints `no test files` per package. There is nothing to
+skip, so — unlike Node, which needed `vitest run --passWithNoTests` — there is no skip
+flag to refuse to add.
+
+`.golangci-lint-version` is the Go spelling of `.node-version` and `.python-version`. It
+costs `go.sum` nothing, and it keeps the rule the same everywhere here: the workflow runs
+the tool, the repo pins it.
+
+### Version precedence, and the one footgun
+
+`golangci-lint-action` resolves the version it installs in this order:
+
+1. the `version` input — not set by this workflow, on purpose
+2. a `github.com/golangci/golangci-lint/v2 vX.Y.Z` line **in `go.mod`**
+3. the `version-file` input, which this workflow points at `.golangci-lint-version`
+
+So a repo that adds golangci-lint as a Go `tool` directive **silently overrides**
+`.golangci-lint-version`. That isn't a bug — both are the repo declaring its own pin,
+which is the point — but someone chasing *"why did CI run a version the file doesn't
+name"* should look at `go.mod` second.
+
+### Renovate needs a custom manager for the pin
+
+`go.mod` is bumped natively. `.golangci-lint-version` is not, and will quietly rot at
+whatever it was pinned to unless a repo adds:
+
+```json
+{
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.golangci-lint-version$/"],
+      "matchStrings": ["^v?(?<currentValue>.+?)\\s*$"],
+      "depNameTemplate": "golangci/golangci-lint",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    }
+  ]
+}
+```
+
+This belongs in each Go repo's `renovate.json` rather than in the shared preset, at least
+until there are enough Go repos to justify moving it.
+
+### Why there's no separate format step
+
+`node-ci.yaml` and `python-ci.yaml` both split formatting from linting, on the grounds
+that a formatting failure reading as a lint failure sends people looking in the wrong
+place. That concern doesn't arise in Go, because golangci-lint **v2** doesn't treat
+formatters as a second command — anything under `formatters:` in `.golangci.yml` is
+reported by `golangci-lint run` as an ordinary issue tagged with the formatter that
+raised it:
+
+```
+main.go:5:1: File is not properly formatted (gofmt)
+```
+
+That already reads as a formatting failure. Splitting it out would also mean installing
+the same binary twice: `golangci-lint-action` keeps the extracted binary path to itself
+and never calls `core.addPath`, so a later `run: golangci-lint fmt --diff` step wouldn't
+find it on `PATH`.
+
+`gofmt -l .` was the other candidate and is deliberately unused — it can't see `goimports`
+grouping or any other formatter the repo enabled, so it would quietly enforce less than
+`.golangci.yml` claims.
+
+### The tidy check
+
+`go build` and `go test` are perfectly happy with a `go.mod` that carries a requirement
+nothing imports any more, or that's missing one something does. Only `go mod tidy` has an
+opinion, so CI asks it and diffs the result.
+
+This is the `npm install --package-lock-only` case, **not** the `uv lock` case that
+`python-ci.yaml` deliberately omits. With a complete `go.sum`, `go mod tidy` resolves from
+the module cache and the recorded hashes — it doesn't consult the index for versions it
+already has, and doesn't upgrade anything. It's a pure function of the tree, so it can't
+turn red on a repo nobody touched because somebody else published a release.
+
+### Why `-race` isn't optional
+
+Go makes concurrency easy enough that every Go repo in this account has some, and a data
+race is precisely the bug that survives a hundred green runs and then corrupts state in
+production. `-race` needs `CGO_ENABLED=1`, which is the `ubuntu-latest` default and is
+unrelated to the `CGO_ENABLED=0` that release builds use.
+
+### Build runs before lint and test
+
+A compile error should read as a compile error. Both later steps would also fail on one —
+golangci-lint typechecks, and `go test` builds — but each reports it in its own
+vocabulary. This is the same reasoning that keeps `typecheck` separate from `build` in
+`node-ci.yaml`, and it's near-free: `setup-go` restores the build cache, and the two steps
+after reuse whatever `go build` compiled.
+
+### Concurrency
+
+Declared inside this workflow as `go-ci-<caller workflow>-<ref>`, cancelling superseded
+pull request runs but never runs on `main`. **Callers must not declare their own
+`concurrency:`.**
+
 ## `node-ci.yaml`
 
 The universal core of a Node repo's checks — install, format, lint, typecheck, test,
