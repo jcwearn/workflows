@@ -503,6 +503,79 @@ write the reason next to it. Two traps worth knowing:
   `FURB162` (dropping `.replace("Z", "+00:00")`) is only correct on 3.11+. Verify in the
   container before applying.
 
+## `docker-build.yaml`
+
+One implementation of "build the container", used both to validate a pull request and to
+push a release. `release.yaml` calls it too, so there is a single copy rather than one per
+repo.
+
+### Usage
+
+```yaml
+# .github/workflows/build-image.yml -- build on a PR, push nothing
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    permissions:
+      contents: read
+    uses: jcwearn/workflows/.github/workflows/docker-build.yaml@v1
+```
+
+Start from `templates/ci-docker.yaml`.
+
+### Inputs
+
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `context` | no | `.` | Docker build context, relative to the repo root |
+| `image` | no | `''` | Full GHCR image to push. **Empty builds without pushing** |
+| `tags` | no | `''` | Newline-separated tags. Required when `image` is set |
+| `ref` | no | `''` | Commit to check out. Empty takes the event's own ref |
+
+**Secrets: none.** `GITHUB_TOKEN` only, and only on the push path.
+
+### `image` decides whether it pushes
+
+There is no `push:` boolean. Empty `image` means build and throw away; a set `image` means
+build, tag and push. Two ways to say the same thing is how you end up with `push: true`
+and nothing to push to, and it mirrors how `release.yaml` already treats an empty `image`
+as "this repo has no build step".
+
+The registry login is skipped entirely when not pushing, so a PR build needs no
+credentials and no `packages` scope.
+
+### ⚠️ This workflow declares no `permissions:`, and must not
+
+`node-ci.yaml` and `python-ci.yaml` both declare `permissions: contents: read` at workflow
+level. This one cannot.
+
+`release.yaml` calls it from a job gated on `inputs.image != ''`. GitHub validates a
+nested job's requested permissions **statically, before any `if:` is evaluated** — so if
+this file declared `packages: write`, every `release.yaml` caller that sets *no* image
+would fail to parse, because a job it never runs asked for a scope it was never granted.
+That is the same bug documented under `release.yaml` below, relocated one level down.
+
+Declaring `contents: read` instead is no better: workflow-level permissions in a reusable
+workflow are a **ceiling**, so the push path could then never inherit `packages: write`.
+
+So it declares nothing and inherits. Callers declare what they grant — `contents: read`
+for a PR build, `contents: write` + `packages: write` for a release.
+
+### What is not an input, and why
+
+| Not an input | Because |
+|---|---|
+| Dockerfile path | Every Dockerfile in these repos is `<context>/Dockerfile` |
+| `platforms` | Nothing here uses `setup-qemu-action`; all builds are single-arch |
+| build args | No consumer, and the input most likely to become code-in-config |
+| cache settings | Identical in every copy this replaces — parameterising them reopens the drift it closes |
+
+Each is a minor bump away if a repo genuinely needs it. Adding them now would be a flag
+with no expiry date.
+
 ## `release.yaml`
 
 Cuts a release for the calling repo when a labelled PR merges to `main`. Every PR

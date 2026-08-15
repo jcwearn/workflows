@@ -1,0 +1,160 @@
+name: Docker Build
+
+# One implementation of "build the container", used both to validate a PR and to
+# push a release. Whether it pushes is decided by a single input: `image` empty
+# means build and throw away, `image` set means build, tag and push.
+#
+# That is deliberately not a `push:` boolean. Two ways to say the same thing is
+# how you end up with `push: true` and no image to push to, and it mirrors how
+# release.yaml already treats an empty `image` as "this repo has no build step".
+#
+# CONTRACT, not inputs. As in node-ci.yaml, the things that are not parameters
+# are not parameters because nothing needs them to be:
+#
+#   Dockerfile path  -> every Dockerfile in these repos is <context>/Dockerfile
+#   platforms        -> nothing here uses setup-qemu-action; all builds are
+#                       single-arch on the runner's own architecture
+#   build args       -> no consumer, and the input most likely to turn into
+#                       code-in-config
+#   cache settings   -> identical in every copy this replaces. Parameterising
+#                       them would reopen the drift this closes.
+#
+# Each of those is a minor version bump away if a repo ever genuinely needs it.
+# Adding them now would be a flag with no expiry date.
+#
+# ⚠️ NO `permissions:` BLOCK, ANYWHERE IN THIS FILE. THIS IS DELIBERATE AND IT
+# MUST STAY THAT WAY.
+#
+# node-ci.yaml and python-ci.yaml both declare `permissions: contents: read` at
+# workflow level. This one cannot, and the reason is the same one release.yaml's
+# build job documents:
+#
+#   GitHub validates a nested job's requested permissions STATICALLY, at
+#   workflow-parse time, before any `if:` is evaluated.
+#
+# release.yaml calls this workflow from a job gated on `inputs.image != ''`. If
+# this file declared `packages: write` -- the obvious thing to write, since it
+# pushes -- then every release.yaml caller that sets NO image would fail to
+# parse, because a job it never runs asked for a scope it was never granted.
+# That is exactly the bug that broke this repo's first release run, relocated
+# one level down.
+#
+# Declaring `contents: read` instead is no better: workflow-level permissions in
+# a reusable workflow are a CEILING, so the push path could then never inherit
+# the `packages: write` it needs.
+#
+# So: declare nothing, inherit everything. Callers declare what they grant.
+# A PR-time caller grants `contents: read`; a release caller grants
+# `contents: write` and `packages: write` and this file narrows neither.
+
+on:
+  workflow_call:
+    inputs:
+      context:
+        description: "Docker build context, relative to the repo root"
+        required: false
+        default: "."
+        type: string
+      image:
+        description: >-
+          Full GHCR image to push, e.g. ghcr.io/jcwearn/foo. Empty (the default)
+          builds without pushing, which is what a pull request wants: it proves
+          the Dockerfile still builds and every binding still resolves, without
+          publishing anything.
+        required: false
+        default: ""
+        type: string
+      tags:
+        description: >-
+          Newline-separated tags to publish. Required when `image` is set,
+          ignored otherwise. Tag POLICY stays with the caller -- release.yaml
+          composes semver, series, major and sha-short from its own plan -- and
+          only the mechanics live here.
+        required: false
+        default: ""
+        type: string
+      ref:
+        description: >-
+          Commit to check out. Empty (the default) takes whatever the event
+          points at, which is right for a pull request. release.yaml passes the
+          resolved merge SHA so the image is built from exactly the commit being
+          tagged, not from whatever main has moved to since.
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  # github.workflow and github.ref are the CALLER's inside a reusable workflow,
+  # and groups are already scoped per repo. Callers must NOT declare their own.
+  group: docker-build-${{ github.workflow }}-${{ github.ref }}
+  # Superseded pull request runs are noise. Every commit on main gets built,
+  # because nothing else is watching it -- and a release run must never be
+  # cancelled, since a half-finished push leaves a tag with no image.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build:
+    name: ${{ inputs.image == '' && 'Build' || 'Build and push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # No `permissions:` here either -- see the header. Inherits the caller's.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Empty falls back to the event's own ref, which is what a PR build
+          # wants. actions/checkout treats '' as "unset".
+          ref: ${{ inputs.ref }}
+          # Nothing here pushes over git; the only push is to a registry.
+          persist-credentials: false
+
+      # Fails before buildx spends a minute warming up, and before the login
+      # step tries to authenticate somewhere GITHUB_TOKEN is not a credential
+      # for. Both checks only mean anything on the push path.
+      - name: Check the push inputs agree
+        if: inputs.image != ''
+        env:
+          IMAGE: ${{ inputs.image }}
+          TAGS: ${{ inputs.tags }}
+        run: |
+          set -euo pipefail
+          # GHCR only. The login below authenticates with GITHUB_TOKEN, which is
+          # not a credential for anywhere else, so anything but ghcr.io would
+          # fail at push with a confusing error. Fail here instead.
+          case "$IMAGE" in
+            ghcr.io/*) ;;
+            *) echo "::error::image must be a ghcr.io/... reference, got '$IMAGE'."; exit 1 ;;
+          esac
+          # An image with no tags would push nothing while reporting success,
+          # which is the failure mode hardest to notice.
+          if [ -z "${TAGS//[[:space:]]/}" ]; then
+            echo "::error::image is set but tags is empty; nothing would be published."
+            exit 1
+          fi
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      # Skipped entirely when not pushing, so a PR build needs no registry
+      # credentials and no packages scope.
+      - name: Log in to GHCR
+        if: inputs.image != ''
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          # GITHUB_TOKEN is provided by the runner rather than being a repository
+          # secret, so it is available here without the caller passing `secrets:`.
+          # User-defined secrets do NOT cascade into a called workflow; if this
+          # file ever needs one, it becomes an explicit input on every caller.
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build${{ inputs.image == '' && '' || ' and push' }}
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: ${{ inputs.context }}
+          push: ${{ inputs.image != '' }}
+          tags: ${{ inputs.tags }}
+          cache-from: type=gha
+          # ignore-error=true is not cosmetic. The GHA cache export hitting the
+          # quota is what failed ansible-runner's build seven times running;
+          # without it a full cache turns every build red.
+          cache-to: type=gha,mode=max,ignore-error=true

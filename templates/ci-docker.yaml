@@ -1,0 +1,33 @@
+name: Build Image
+
+# Copy to .github/workflows/build-image.yml in a repo that ships a Dockerfile.
+#
+# This builds on a pull request WITHOUT pushing, so a Dockerfile or dependency
+# change that breaks the image is caught before merge rather than during a
+# release. Pushing is release.yaml's job, and it calls the same shared workflow
+# with an `image` set.
+#
+# Contract: a Dockerfile at <context>/Dockerfile. That is all.
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    # Explicit even though `read` is all this needs and all the account grants
+    # by default. A reusable workflow can only narrow what the caller granted,
+    # so the grant belongs here where it is visible.
+    #
+    # `packages: write` is deliberately NOT granted: with no `image` input the
+    # shared workflow skips the registry login entirely and pushes nothing.
+    permissions:
+      contents: read
+    # Renovate pins this to a digest on its next run, leaving `# v1` behind as
+    # the record of what to follow. Write `@v1` with no trailing comment; the
+    # comment belongs on a digest, where it says which tag it came from.
+    uses: jcwearn/workflows/.github/workflows/docker-build.yaml@v1
+    # Both inputs are optional; delete this block if the Dockerfile is at the
+    # repo root, which it is in every repo using this today.
+    with:
+      context: .
