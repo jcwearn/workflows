@@ -52,7 +52,12 @@ For comparison, `actions/checkout` right now:
 - Changing the `permissions:` a caller must grant
 - Renaming the workflow file
 
-**Minor** — a new optional input or secret; new behaviour behind a default-off flag.
+**Minor** — a new optional input or secret; new behaviour behind a default-off flag; new
+behaviour that can only activate on the presence of a repo file no existing caller has.
+
+That last clause is what made `python-ci.yaml`'s uv path a minor rather than a major: the
+branch is entered only when the caller commits a `uv.lock`, and a caller that adds one is by
+definition not an unchanged caller.
 
 **Patch** — bug fixes, doc changes, internal refactors with identical observable
 behaviour, and bumping the pinned `gitleaks-version` / `gitleaks-sha256` defaults.
@@ -400,12 +405,38 @@ Start from `templates/ci-python.yaml`.
 
 ### The contract
 
+Two requirements are shared by every caller:
+
 | Requirement | What enforces it |
 |---|---|
-| `.python-version` | `setup-python` errors on a missing `python-version-file` |
-| `requirements-dev.txt` (should `-r requirements.txt`) | `pip install` |
-| `ruff` pinned in it | the ruff steps fail as command-not-found |
+| `.python-version` | see the table below — it differs by path |
 | tests discoverable from the repo root | `pytest` |
+
+The rest depend on how the repo installs:
+
+| | pip repo | uv repo |
+|---|---|---|
+| **Selected by** | anything without a `uv.lock` | a committed `uv.lock` |
+| **Manifest** | `requirements-dev.txt`, which should `-r requirements.txt` | `uv.lock` + `[dependency-groups] dev` in `pyproject.toml` |
+| **Install** | `pip install -r requirements-dev.txt` | `uv sync --locked` |
+| **`.python-version`** | `setup-python` errors on a missing `python-version-file` | the detect step errors — `setup-uv` has no `python-version-file`, and `uv sync` would otherwise fall back to `requires-python` |
+| **Lockfile freshness** | not checked | `uv sync --locked` fails on drift |
+| **`ruff` and `pytest` pinned** | in `requirements-dev.txt` | in the `dev` group |
+
+### Why there's no `package-manager` input
+
+A committed `uv.lock` **is** the declaration, in exactly the way `package-lock.json` and
+`requirements-dev.txt` already are. An input would be a second place to say the same thing,
+and the two can disagree — nothing would stop a caller passing `package-manager: pip` while
+committing a `uv.lock`. The rule stays what it is everywhere else here: the repo's own files
+are the contract.
+
+The honest cost is that the branch is implicit, so a run log shows skipped steps and a
+reader has to work out which half executed. The detect step prints `Package manager: uv` (or
+`pip`) for exactly that reason.
+
+`resume` is the first uv consumer. No repo predating it has a `uv.lock`, which is why adding
+this path could not change an existing caller's behaviour.
 
 ### Pin `.python-version` to what the *container* runs
 
@@ -425,6 +456,10 @@ digest.
 This is the opposite call from the Node repos, where the version is ours to choose and
 `.node-version` is pinned exact.
 
+**No container?** The rule is unchanged — pin what actually executes the code, which is then
+whatever your own toolchain runs. Still the minor, not the patch. `uv python pin 3.13` writes
+the file for you.
+
 ### Why ruff isn't pinned here
 
 There are two pinning idioms in this repo and they are not interchangeable:
@@ -432,7 +467,7 @@ There are two pinning idioms in this repo and they are not interchangeable:
 | Kind | Where the version lives |
 |---|---|
 | Tool the **workflow** downloads | version + `sha256` in the workflow, deliberately hidden from Renovate — `actionlint` in `ci.yaml`, `gitleaks` in `public-sync.yaml` |
-| Tool the **repo** declares | exact pin in the repo's manifest, Renovate bumps it there — `ruff` in `requirements-dev.txt`, `oxlint`/`prettier` in `devDependencies` |
+| Tool the **repo** declares | exact pin in the repo's manifest, Renovate bumps it there — `ruff` in `requirements-dev.txt` or `[dependency-groups] dev`, `oxlint`/`prettier` in `devDependencies` |
 
 Ruff is the second kind. That keeps both CI workflows structurally identical — each just
 runs the repo's own tools — and means a ruff release that newly flags a repo arrives as a
@@ -442,9 +477,15 @@ reviewable PR rather than a surprise red run on somebody else's schedule.
 
 Three commits, ordered so the formatting one is blame-ignorable on its own:
 
-1. `ruff.toml`, `.python-version`, `ruff==X.Y.Z` in `requirements-dev.txt` — no code changes
+1. `ruff.toml`, `.python-version`, `ruff==X.Y.Z` in `requirements-dev.txt` — no code changes.
+   On a uv repo that is `uv add --group dev ruff==X.Y.Z pytest==A.B.C`, which re-locks
+   `uv.lock` for you
 2. `ruff format .` — alone, nothing else in it
 3. `.git-blame-ignore-revs` recording that commit's SHA
+
+A repo that has never been linted will usually need a fourth commit, between 1 and 2, fixing
+what `ruff check` finds. Keep it separate from the reformat so step 2 stays the only commit
+worth blame-ignoring.
 
 Use `ruff.toml`, not `pyproject.toml`, unless the repo really is a package — a
 `pyproject.toml` invites tooling to treat it as installable.
