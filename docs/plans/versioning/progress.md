@@ -1,15 +1,71 @@
 # Progress: Versioning system for `jcwearn/workflows`
 
-## Current Status: In Progress
+## Current Status: Complete
 
 | Phase | Status | Updated | Notes |
 |-------|--------|---------|-------|
-| A. Labels and seed tag | Complete | 2026-08-14 | 4 labels in `workflows`, `release:skip` added to both siblings. `v1.0.0` + `v1` tagged at `d053075`, Release created on `v1.0.0` only |
-| B. Consumers to `@v1` | In Review | 2026-08-14 | All five PRs open: homeassistant-config#104, k3s-cluster#716, cf-worker-email#143, borderline#72, anupamaandjackson#271. Proven no-op |
-| C. Land the machinery | In Progress | 2026-08-14 | Split into C1 `ci.yaml` (#5), C2 composite actions + tests (#6), C3 the release workflows (#7). All three PRs open and stacked; **a manual `v1.1.0` cut is required between C2 and C3** |
-| D. Docker repos | Not Started | — | `ansible-runner` first, then `withjoy-exporter` |
+| A. Labels and seed tag | Complete | 2026-08-14 | 4 labels here, `release:skip` added to the sibling repos. `v1.0.0` + `v1` seeded at `d053075` |
+| B. Consumers to `@v1` | Complete | 2026-08-14 | All five merged and syncing green. Digest pins with `# v1` comments, no custom Renovate config |
+| C. Land the machinery | Complete | 2026-08-14 | C1 `ci.yaml` (#5), C2 composite actions + tests (#6), manual `v1.1.0` cut, C3 the release workflows (#7), then #8 fixing nested-job permissions. Released as `v1.1.1` |
+| D. Image repos | Complete | 2026-08-14 | `ansible-runner` 0.1.36, `withjoy-exporter` v0.4.2, `world-clock` v0.2.19 — each verified against the GHCR registry, not the run log |
+
+### Released artifacts, verified
+
+Every version below was confirmed by resolving the tag against the registry directly,
+because "the run was green" is exactly the check that failed to catch the original bug.
+
+| Repo | Version | Image digest |
+|---|---|---|
+| `ansible-runner` | `0.1.36` | `sha256:1741b843…` (`0.1` and `0` moved to match) |
+| `withjoy-exporter` | `v0.4.2` | `sha256:bef16d80…` (`v0.4` and `v0` moved to match) |
+| `world-clock` | `v0.2.19` | `sha256:8cf8250a…` (`v0.2` and `v0` moved to match) |
+
+`ansible-runner` `0.1.35` remains **absent from the registry** while its git tag and
+Release exist. That is the original defect, left in place deliberately: the tags are
+real, nothing consumes those versions, and deleting seven of them is churn.
+
+## Still open
+
+- **Renovate has not yet offered `k3s-cluster` the image bumps** (`withjoy-exporter`
+  `v0.4.1` → `v0.4.2`, `world-clock` `v0.2.12` → `v0.2.19`). That is the last
+  confirmation that `image-tag-prefix: "v"` did its job. Not a failure — the
+  self-hosted config schedules PR creation for `* 0-7 * * 0,5,6` America/New_York, so
+  the next window is Saturday 00:00 ET.
+- Those bumps will **automerge unattended**: the global config auto-approves and
+  automerges all non-major updates, and `pin`/`digest` are in `matchUpdateTypes`.
 
 ## Handoff Notes
+
+### Three copies, three different latent defects
+
+The original case for consolidating was drift. What the migration actually found was
+that all three copies had the *same* bug in different states of having gone off:
+
+| Repo | Ordering | Outcome |
+|---|---|---|
+| `ansible-runner` | tag → build | **Fired.** `v0.1.29`–`v0.1.35`: seven tags and Releases, no images, unnoticed for a month |
+| `world-clock` | tag → build → Release, one job | **Latent.** A failed build would have left a tag with *neither* image nor Release. All 20 tags happened to have images |
+| `withjoy-exporter` | build → tag | Correct, but by accident — nothing enforced it |
+
+Only chance separated them. That is the argument for `publish` sitting behind
+`needs: build` *inside* the reusable workflow, where a caller cannot rewire it.
+
+Two supporting details that mattered as much as the ordering: `ansible-runner` lacked
+`cache-to ...,ignore-error=true` (the flag whose absence failed those seven builds,
+and which `withjoy-exporter` already had), and both label checks matched loosely —
+one on substrings, one accepting any `release:*` suffix into a `case` with no default
+arm.
+
+### Two GitHub behaviours worth not re-learning
+
+**Nested-job permissions are validated statically.** A job that declares a scope the
+caller did not grant makes the workflow *invalid*, before any `if:` is evaluated — so
+a job that would have been skipped still breaks the file. This took out the first real
+release run. `build` therefore declares no `permissions:` and inherits the caller's.
+
+**`uses: ./...` inside a reusable workflow resolves against the CALLER's checkout**,
+not the repo holding the workflow. Shared logic has to travel as a composite action
+referenced by full path.
 
 ### Phase C was split three ways, because of how `uses: ./` resolves
 
