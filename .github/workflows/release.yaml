@@ -137,7 +137,7 @@ jobs:
 
       - name: Read the release label
         id: label
-        uses: jcwearn/workflows/.github/actions/release-label@623f2a008cb8a83ab2bc1868631aa0486ed84bd6 # v1
+        uses: jcwearn/workflows/.github/actions/release-label@v1
         with:
           labels: ${{ toJson(github.event.pull_request.labels.*.name) }}
 
@@ -154,7 +154,7 @@ jobs:
       - name: Compute the next version
         id: version
         if: steps.label.outputs.release == 'true'
-        uses: jcwearn/workflows/.github/actions/next-version@623f2a008cb8a83ab2bc1868631aa0486ed84bd6 # v1
+        uses: jcwearn/workflows/.github/actions/next-version@v1
         with:
           bump: ${{ steps.label.outputs.bump }}
 
