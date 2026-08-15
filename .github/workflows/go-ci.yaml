@@ -1,0 +1,168 @@
+name: Go CI
+
+# The Go counterpart to node-ci.yaml and python-ci.yaml, and deliberately the
+# same shape: run the tools the repo itself declares, in the repo's own order.
+# This file downloads no linter and decides no version -- that belongs to the
+# repo, so a bump arrives as a reviewable dependency PR rather than as a
+# surprise red run on somebody else's schedule.
+#
+# The same distinction the sibling files draw applies here:
+#
+#   Tool the WORKFLOW downloads -> version + sha256 here, hidden from Renovate
+#                                  (actionlint in ci.yaml, gitleaks in
+#                                   public-sync.yaml)
+#   Tool the REPO declares      -> exact pin in the repo's own file, Renovate
+#                                  bumps it there (golangci-lint in
+#                                   .golangci-lint-version, the toolchain in
+#                                   go.mod)
+#
+# CONTRACT, not inputs. Each of these is enforced by a tool that already fails
+# with a good message, which is why none of them is a parameter:
+#
+#   go.mod                   -> setup-go errors without it
+#   .golangci-lint-version   -> golangci-lint-action errors naming the missing
+#                               path. This is the Go spelling of .node-version
+#                               and .python-version: the repo pins the tool, the
+#                               workflow only runs it.
+#   .golangci.yml            -> the repo's own linter and formatter selection.
+#                               golangci-lint runs with its defaults if absent,
+#                               which is a weaker check than any repo here
+#                               wants, so the template ships one.
+#   tests discoverable by `go test ./...` -> go test
+#
+# A repo with no tests satisfies this honestly -- `go test ./...` is green on a
+# module with no test files and says "no test files" per package. There is
+# nothing to skip and so no skip flag, which is the same position node-ci takes
+# with `vitest run --passWithNoTests`.
+#
+# ONE PRECEDENCE FOOTGUN worth knowing about. golangci-lint-action resolves the
+# version it installs in this order:
+#
+#   1. the `version` input            (not set here, on purpose)
+#   2. a `github.com/golangci/golangci-lint/v2 vX.Y.Z` line in go.mod
+#   3. the `version-file` input
+#
+# So a repo that adds golangci-lint as a `tool` directive silently overrides
+# .golangci-lint-version. That is not a bug and it is not worth guarding
+# against -- both are the repo declaring its own pin, which is the whole point
+# -- but a reader chasing "why did CI run a version the file does not name"
+# should look at go.mod second. .golangci-lint-version is the contract here
+# because it costs go.sum nothing and reads like its Node and Python siblings.
+#
+# WHY THERE IS NO SEPARATE FORMAT STEP, when node-ci and python-ci both have
+# one. In golangci-lint v2 the formatters are not a second command: anything
+# under `formatters:` in .golangci.yml is reported by `golangci-lint run` as an
+# ordinary issue, tagged with the formatter that raised it --
+#
+#   main.go:5:1: File is not properly formatted (gofmt)
+#
+# -- which already reads as a formatting failure rather than as a lint failure,
+# so the concern that split them in python-ci does not arise. Splitting them
+# here would mean installing the same binary twice: golangci-lint-action keeps
+# the extracted binary path to itself and never calls core.addPath, so a later
+# `run: golangci-lint fmt --diff` step would not find it on PATH.
+#
+# `gofmt -l .` was the other candidate and is deliberately not used. It cannot
+# see goimports grouping or any other formatter the repo enabled, so it would
+# quietly enforce less than .golangci.yml claims.
+
+on:
+  workflow_call:
+    inputs:
+      timeout-minutes:
+        description: >-
+          Job timeout. The default suits a unit suite; raise it for anything
+          that stands up a real dependency or runs the race detector over a
+          large tree.
+        required: false
+        default: 10
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  # github.workflow and github.ref are the CALLER's inside a reusable
+  # workflow, and concurrency groups are already scoped per repo -- so this is
+  # one group per calling workflow per ref. Callers must NOT also declare their
+  # own; two groups for one logical run means the outer one holds a slot while
+  # the inner one queues behind it.
+  group: go-ci-${{ github.workflow }}-${{ github.ref }}
+  # Superseded pull request runs are noise. Every commit on main gets checked,
+  # because nothing else is watching it.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  check:
+    name: Tidy, build, lint, test
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Nothing in this job pushes. The tidy check reads the tree and
+          # compares; it never writes a ref.
+          persist-credentials: false
+
+      # go-version-file rather than a version input, for the same reason
+      # .node-version and .python-version are read rather than passed: the
+      # toolchain a repo builds against is the repo's statement to make, and
+      # go.mod is where Go already keeps it. setup-go caches the module and
+      # build caches keyed on go.sum by default, which is what makes the
+      # separate Build step below near-free.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+
+      # The Go analogue of node-ci's lockfile check, and it belongs here for
+      # the same reason: `go build` and `go test` are perfectly happy with a
+      # go.mod carrying a requirement nothing imports any more, or missing one
+      # that something does. Only tidy has an opinion.
+      #
+      # This is the npm-install--package-lock-only case, NOT the uv-lock case
+      # that python-ci deliberately omits. With a complete go.sum, `go mod
+      # tidy` resolves from the module cache and the recorded hashes; it does
+      # not consult the index for versions it already has and does not upgrade
+      # anything. So it is a pure function of the tree, and cannot turn red on
+      # a repo nobody touched because somebody else published a release.
+      - name: go.mod is tidy
+        run: |
+          set -euo pipefail
+          go mod tidy
+          if ! git diff --exit-code go.mod go.sum; then
+            echo "::error::go.mod or go.sum is not tidy. Run 'go mod tidy' and commit the result."
+            exit 1
+          fi
+
+      # Before Lint and Test rather than after, so a compile error reads as a
+      # compile error. Both of the steps below would also fail on one --
+      # golangci-lint typechecks, and `go test` builds -- but each would report
+      # it in its own vocabulary and send someone looking in the wrong place.
+      # This is the same reason node-ci keeps `typecheck` separate from
+      # `build`. It costs almost nothing: setup-go restored the build cache,
+      # and the two steps below reuse whatever this one compiles.
+      - name: Build
+        run: go build ./...
+
+      # No `version` and no `install-mode`: the default is a prebuilt binary,
+      # and the version comes from .golangci-lint-version via version-file. See
+      # the precedence note in the header.
+      #
+      # The action emits findings as inline PR annotations by default, which is
+      # what python-ci gets from `ruff check --output-format=github` -- the
+      # findings land on the diff rather than in a wall of log output.
+      #
+      # This step covers formatting too. See the header.
+      - name: Lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version-file: .golangci-lint-version
+
+      # -race is not optional here. Go makes concurrency easy enough that every
+      # repo in this account has some, and a data race is exactly the class of
+      # bug that passes a hundred green runs and then corrupts state in
+      # production. It needs CGO_ENABLED=1, which is the ubuntu-latest default
+      # and is unrelated to the CGO_ENABLED=0 that release builds use.
+      - name: Test
+        run: go test -race ./...

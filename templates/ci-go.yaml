@@ -1,0 +1,54 @@
+name: CI
+
+# Copy to .github/workflows/ci.yml in a Go repo.
+#
+# Before this works, the repo must satisfy the contract go-ci.yaml relies on:
+#
+#   go.mod                    the toolchain pin setup-go reads
+#   .golangci-lint-version    pinned exact, e.g. 2.12.2 -- one line, no `v`
+#                             needed (the action adds it)
+#   .golangci.yml             `version: "2"`, plus the linters and formatters
+#                             this repo wants. Formatters are checked by the
+#                             same `golangci-lint run` invocation, so there is
+#                             no separate format step to configure.
+#   tests reachable by `go test ./...`
+#
+# A repo with no tests satisfies that last line as it stands -- `go test ./...`
+# is green on a module with no test files. Nothing to skip, so no skip flag.
+#
+# Renovate bumps go.mod natively. .golangci-lint-version needs a custom manager
+# to be bumped automatically; see the go-ci.yaml section of the workflows repo
+# README for the regex, or the file will quietly rot at whatever it was pinned
+# to on the day it was written.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ci:
+    # Explicit even though `read` is all go-ci needs and all this account
+    # grants by default. A reusable workflow can only narrow what the caller
+    # granted, so the grant belongs here where it is visible.
+    permissions:
+      contents: read
+    # Renovate pins this to a digest on its next run, leaving `# v1` behind as
+    # the record of what to follow. Write `@v1` with no trailing comment; the
+    # comment belongs on a digest, where it says which tag the digest came
+    # from. See the repo README for what counts as breaking.
+    uses: jcwearn/workflows/.github/workflows/go-ci.yaml@v1
+    # The only input, and it is optional; delete this block if 10 minutes is
+    # enough, which it is for every Go repo here today.
+    with:
+      # Default is 10. Raise it for a suite that stands up a real dependency,
+      # or for a tree big enough that -race is slow.
+      timeout-minutes: 10
+
+  # Bespoke steps do NOT belong above. Give them their own job here, or their
+  # own workflow file -- they then run in parallel with the shared core rather
+  # than extending it. A repo that generates code (templ, mockgen, stringer)
+  # wants a `go generate ./... && git diff --exit-code` drift check, and that
+  # check belongs in a local workflow: the generator is that repo's choice, not
+  # every Go repo's, and go-ci.yaml would have to grow a flag to express it.
