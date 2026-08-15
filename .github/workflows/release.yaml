@@ -212,22 +212,23 @@ jobs:
     # the nested chain asks for a scope, so nothing can invalidate a caller's
     # workflow file.
     #
-    # ⚠️ BOOTSTRAP PIN, not the final state. This becomes `@v1` in a follow-up
-    # PR once v1.5.0 has shipped and moved the tag.
+    # @v1, so this file and the workflow it calls move together: a release that
+    # changes both ships one artifact rather than a new workflow still calling
+    # an old build.
     #
-    # It cannot be @v1 today: self-release.yaml runs THIS file locally
-    # (`uses: ./.github/workflows/release.yaml`), so the merge that adds
-    # docker-build.yaml is also the run that parses this reference -- and @v1
-    # still points at a commit with no such file. If GitHub resolves a nested
-    # `uses:` at parse time, that would fail the very release meant to publish
-    # it, leaving no way out but a fix-forward.
+    # Getting here needed a bootstrap step worth remembering if a second nested
+    # workflow is ever added. self-release.yaml runs THIS file locally
+    # (`uses: ./.github/workflows/release.yaml`), so the merge that ADDED
+    # docker-build.yaml was also the run that parsed the reference to it -- and
+    # at that moment @v1 still pointed at a commit with no such file. A nested
+    # `uses:` that GitHub resolves at parse time would have failed the very
+    # release meant to publish it. v1.5.0 shipped with the introducing commit's
+    # SHA pinned here instead, and this is the follow-up that flips it.
     #
-    # The SHA below is the commit that introduced docker-build.yaml, so it
-    # resolves before, during and after the release, and survives the branch
-    # being deleted. Renovate will not touch it -- renovate.json disables
-    # updates for this repo's references to itself -- so the flip to @v1 is a
-    # deliberate manual step, not something that happens on its own.
-    uses: jcwearn/workflows/.github/workflows/docker-build.yaml@9e3fb46466ec051823e1699904ef83f02510c11d
+    # Renovate will not maintain this line -- renovate.json deliberately
+    # excludes this repo's references to itself, so the two halves of a release
+    # cannot drift apart.
+    uses: jcwearn/workflows/.github/workflows/docker-build.yaml@v1
     with:
       image: ${{ inputs.image }}
       context: ${{ inputs.image-context }}
