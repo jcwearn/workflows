@@ -211,7 +211,23 @@ jobs:
     # see its header. That is what makes calling it from here safe: nothing in
     # the nested chain asks for a scope, so nothing can invalidate a caller's
     # workflow file.
-    uses: jcwearn/workflows/.github/workflows/docker-build.yaml@v1
+    #
+    # ⚠️ BOOTSTRAP PIN, not the final state. This becomes `@v1` in a follow-up
+    # PR once v1.5.0 has shipped and moved the tag.
+    #
+    # It cannot be @v1 today: self-release.yaml runs THIS file locally
+    # (`uses: ./.github/workflows/release.yaml`), so the merge that adds
+    # docker-build.yaml is also the run that parses this reference -- and @v1
+    # still points at a commit with no such file. If GitHub resolves a nested
+    # `uses:` at parse time, that would fail the very release meant to publish
+    # it, leaving no way out but a fix-forward.
+    #
+    # The SHA below is the commit that introduced docker-build.yaml, so it
+    # resolves before, during and after the release, and survives the branch
+    # being deleted. Renovate will not touch it -- renovate.json disables
+    # updates for this repo's references to itself -- so the flip to @v1 is a
+    # deliberate manual step, not something that happens on its own.
+    uses: jcwearn/workflows/.github/workflows/docker-build.yaml@9e3fb46466ec051823e1699904ef83f02510c11d
     with:
       image: ${{ inputs.image }}
       context: ${{ inputs.image-context }}
