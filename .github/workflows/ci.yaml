@@ -37,11 +37,11 @@ jobs:
           echo "${SHA256}  actionlint.tar.gz" | sha256sum -c -
           tar -xzf actionlint.tar.gz actionlint
 
-          # templates/publish.yaml is passed explicitly. It is a real workflow
-          # that gets copied verbatim into other repos, but it lives outside
-          # .github/workflows so actionlint would never find it on its own --
-          # which makes it the file most likely to be copied broken.
-          ./actionlint -color .github/workflows/*.yaml templates/publish.yaml
+          # templates/ is passed explicitly. These are real workflows that get
+          # copied verbatim into other repos, but they live outside
+          # .github/workflows so actionlint would never find them on its own --
+          # which makes them the files most likely to be copied broken.
+          ./actionlint -color .github/workflows/*.yaml templates/*.yaml
 
   shellcheck:
     name: shellcheck

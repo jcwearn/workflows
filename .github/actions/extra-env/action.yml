@@ -1,0 +1,23 @@
+name: Extra env
+description: Validate KEY=value lines and export them to the job environment.
+
+# A composite action rather than shared workflow shell, because `uses: ./...`
+# inside a reusable workflow resolves against the CALLER's checkout, not this
+# repo. A composite action referenced as
+# jcwearn/workflows/.github/actions/extra-env@v1 brings its own files, so
+# $GITHUB_ACTION_PATH always points at the script next to this file.
+
+inputs:
+  vars:
+    description: "KEY=value, one per line. Blank lines are ignored."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        EXTRA_ENV: ${{ inputs.vars }}
+      run: |
+        set -euo pipefail
+        "$GITHUB_ACTION_PATH/extra-env.sh" >> "$GITHUB_ENV"
