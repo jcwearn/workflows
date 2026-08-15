@@ -366,6 +366,102 @@ pull request runs but never runs on `main`. **Callers must not declare their own
 `concurrency:`** — two groups for one logical run means the outer one holds a slot while
 the inner one queues behind it.
 
+## `python-ci.yaml`
+
+The Python counterpart to `node-ci.yaml`, and deliberately the same shape: lint, check
+formatting, run the tests — using the tools the repo itself declares.
+
+### Usage
+
+```yaml
+# .github/workflows/ci.yml
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  ci:
+    permissions:
+      contents: read
+    uses: jcwearn/workflows/.github/workflows/python-ci.yaml@v1
+```
+
+Start from `templates/ci-python.yaml`.
+
+### Inputs
+
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `timeout-minutes` | no | `10` | Job timeout. Raise for a suite that drives a browser or talks to a real service |
+
+**Secrets: none.** `GITHUB_TOKEN` only, at `contents: read`.
+
+### The contract
+
+| Requirement | What enforces it |
+|---|---|
+| `.python-version` | `setup-python` errors on a missing `python-version-file` |
+| `requirements-dev.txt` (should `-r requirements.txt`) | `pip install` |
+| `ruff` pinned in it | the ruff steps fail as command-not-found |
+| tests discoverable from the repo root | `pytest` |
+
+### Pin `.python-version` to what the *container* runs
+
+Not to the newest release. `withjoy-exporter` ran CI on Python 3.14 while its
+`playwright/python:v1.62.0-noble` base image shipped **3.12.3** — so every green run was
+verifying an interpreter production never executed.
+
+```bash
+docker run --rm <base image> python -V
+```
+
+Pin the **minor**, not the patch. The patch is chosen by the base image rather than by
+you, so pinning it exactly turns a harmless base-image rebuild into a red run. A minor
+move is the one that matters, and it arrives as a visible Renovate bump of the image
+digest.
+
+This is the opposite call from the Node repos, where the version is ours to choose and
+`.node-version` is pinned exact.
+
+### Why ruff isn't pinned here
+
+There are two pinning idioms in this repo and they are not interchangeable:
+
+| Kind | Where the version lives |
+|---|---|
+| Tool the **workflow** downloads | version + `sha256` in the workflow, deliberately hidden from Renovate — `actionlint` in `ci.yaml`, `gitleaks` in `public-sync.yaml` |
+| Tool the **repo** declares | exact pin in the repo's manifest, Renovate bumps it there — `ruff` in `requirements-dev.txt`, `oxlint`/`prettier` in `devDependencies` |
+
+Ruff is the second kind. That keeps both CI workflows structurally identical — each just
+runs the repo's own tools — and means a ruff release that newly flags a repo arrives as a
+reviewable PR rather than a surprise red run on somebody else's schedule.
+
+### Adopting ruff on a codebase that has never been linted
+
+Three commits, ordered so the formatting one is blame-ignorable on its own:
+
+1. `ruff.toml`, `.python-version`, `ruff==X.Y.Z` in `requirements-dev.txt` — no code changes
+2. `ruff format .` — alone, nothing else in it
+3. `.git-blame-ignore-revs` recording that commit's SHA
+
+Use `ruff.toml`, not `pyproject.toml`, unless the repo really is a package — a
+`pyproject.toml` invites tooling to treat it as installable.
+
+Leave `[lint] select` at ruff's default for the first adoption, then widen one rule
+family at a time. Note the default is **wider than `["E4","E7","E9","F"]`** in current
+ruff — `withjoy-exporter` expected near-zero findings and got 21, of which 18 autofixed.
+
+Fix findings rather than `# noqa`-ing them, or the first adoption PR establishes that the
+linter is advisory. A deliberate exception is fine when it's genuinely a design choice —
+write the reason next to it. Two traps worth knowing:
+
+- A comment that *begins* `# noqa` is parsed as a blanket noqa directive. `RUF100` catches it.
+- `ruff check --fix` leaves "unsafe" fixes alone, and they can be interpreter-dependent.
+  `FURB162` (dropping `.replace("Z", "+00:00")`) is only correct on 3.11+. Verify in the
+  container before applying.
+
 ## `release.yaml`
 
 Cuts a release for the calling repo when a labelled PR merges to `main`. Every PR

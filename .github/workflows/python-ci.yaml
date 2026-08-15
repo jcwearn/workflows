@@ -1,0 +1,93 @@
+name: Python CI
+
+# The Python counterpart to node-ci.yaml, and deliberately the same shape: run
+# the tools the repo itself declares, in the repo's own order. Neither file
+# downloads a linter or decides a version -- that belongs to the repo, so a
+# bump arrives as a reviewable dependency PR rather than as a surprise red run
+# on somebody else's schedule.
+#
+# That is the opposite of how actionlint and gitleaks are pinned in this repo,
+# and the distinction is worth keeping straight:
+#
+#   Tool the WORKFLOW downloads -> version + sha256 here, hidden from Renovate
+#                                  (actionlint in ci.yaml, gitleaks in
+#                                   public-sync.yaml)
+#   Tool the REPO declares      -> exact pin in the repo's manifest, Renovate
+#                                  bumps it there (ruff in requirements-dev.txt,
+#                                   oxlint and prettier in devDependencies)
+#
+# CONTRACT, not inputs. As in node-ci.yaml, each of these is enforced by a tool
+# that already fails with a good message:
+#
+#   .python-version        -> setup-python errors without it
+#   requirements-dev.txt   -> pip install; it should `-r requirements.txt`
+#   ruff in that file      -> the ruff steps fail as command-not-found
+#   tests discoverable from the repo root -> pytest
+#
+# One pin worth understanding: .python-version should track the interpreter the
+# repo's CONTAINER runs, not the newest release. withjoy-exporter ran CI on
+# 3.14 while its playwright base image shipped 3.12.3, so every green run was
+# verifying an interpreter production never executed.
+
+on:
+  workflow_call:
+    inputs:
+      timeout-minutes:
+        description: >-
+          Job timeout. The default suits a suite of unit tests; raise it for
+          anything that drives a browser or talks to a real service.
+        required: false
+        default: 10
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  # github.workflow and github.ref are the CALLER's inside a reusable
+  # workflow, and concurrency groups are already scoped per repo -- so this is
+  # one group per calling workflow per ref. Callers must NOT also declare their
+  # own; two groups for one logical run means the outer one holds a slot while
+  # the inner one queues behind it.
+  group: python-ci-${{ github.workflow }}-${{ github.ref }}
+  # Superseded pull request runs are noise. Every commit on main gets checked,
+  # because nothing else is watching it.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  check:
+    name: Lint, format, test
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Nothing in this job pushes.
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version-file: '.python-version'
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install
+        run: pip install -r requirements-dev.txt
+
+      # --output-format=github turns findings into inline PR annotations rather
+      # than a wall of text in the log. That is what makes a staged rule-set
+      # widening reviewable: the diff and the findings appear in the same place.
+      - name: Lint
+        run: ruff check --output-format=github .
+
+      # Separate from `ruff check` on purpose. They are different questions, and
+      # a formatting failure that reads as a lint failure sends people looking
+      # in the wrong place.
+      - name: Format
+        run: ruff format --check .
+
+      - name: Test
+        run: pytest
