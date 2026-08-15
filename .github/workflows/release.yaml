@@ -105,6 +105,7 @@ jobs:
       contents: read
     outputs:
       release: ${{ steps.label.outputs.release }}
+      tags: ${{ steps.tags.outputs.tags }}
       version: ${{ steps.version.outputs.version }}
       semver: ${{ steps.version.outputs.semver }}
       minor_series: ${{ steps.version.outputs.minor_series }}
@@ -158,50 +159,25 @@ jobs:
         with:
           bump: ${{ steps.label.outputs.bump }}
 
-  build:
-    name: Build and push image
-    needs: plan
-    if: needs.plan.outputs.release == 'true' && inputs.image != ''
-    runs-on: ubuntu-latest
-    # No `permissions:` here, deliberately, even though this job pushes to
-    # GHCR and clearly wants `packages: write`.
-    #
-    # GitHub validates a nested job's requested permissions against the
-    # caller's grant STATICALLY, at workflow-parse time -- before any `if:` is
-    # evaluated. So declaring `packages: write` here makes the whole workflow
-    # invalid for any caller that does not grant it, including callers where
-    # `image` is empty and this job never runs. That is not hypothetical: it
-    # is what broke this repo's own first release run.
-    #
-    # Inheriting instead means image callers grant `packages: write` and get
-    # it, and callers that build nothing are unaffected. The cost is that this
-    # job also inherits `contents: write` from an image caller rather than the
-    # `contents: read` it needs; there is no way to narrow one scope without
-    # declaring the other.
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ needs.plan.outputs.sha }}
-          persist-credentials: false
-
+      # Composed here rather than in `build`, because `build` is now a `uses:`
+      # job and a reusable-workflow call cannot carry steps of its own. That is
+      # the better home for it regardless: which tags a release publishes is
+      # release POLICY, and docker-build.yaml only needs to be told the answer.
+      #
+      # The ghcr.io guard that used to sit alongside this moved to
+      # docker-build.yaml, next to the login it exists to protect.
       - name: Compose image tags
         id: tags
+        if: steps.label.outputs.release == 'true' && inputs.image != ''
         env:
           IMAGE: ${{ inputs.image }}
           PREFIX: ${{ inputs.image-tag-prefix }}
-          SEMVER: ${{ needs.plan.outputs.semver }}
-          SERIES: ${{ needs.plan.outputs.minor_series }}
-          MAJOR: ${{ needs.plan.outputs.major_bare }}
-          SHA: ${{ needs.plan.outputs.sha }}
+          SEMVER: ${{ steps.version.outputs.semver }}
+          SERIES: ${{ steps.version.outputs.minor_series }}
+          MAJOR: ${{ steps.version.outputs.major_bare }}
+          SHA: ${{ steps.sha.outputs.sha }}
         run: |
           set -euo pipefail
-          # GHCR only. The login below authenticates with GITHUB_TOKEN, which
-          # is not a credential for anywhere else, so anything but ghcr.io
-          # would fail at push with a confusing error. Fail here instead.
-          case "$IMAGE" in
-            ghcr.io/*) ;;
-            *) echo "::error::image must be a ghcr.io/... reference, got '$IMAGE'."; exit 1 ;;
-          esac
           {
             echo "tags<<EOF"
             echo "${IMAGE}:${PREFIX}${SEMVER}"
@@ -211,25 +187,55 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
-
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: ${{ inputs.image-context }}
-          push: true
-          tags: ${{ steps.tags.outputs.tags }}
-          cache-from: type=gha
-          # ignore-error=true is not cosmetic. The GHA cache export hitting the
-          # quota is what failed ansible-runner's build seven times running;
-          # without it a full cache turns every release red.
-          cache-to: type=gha,mode=max,ignore-error=true
+  build:
+    name: Build and push image
+    needs: plan
+    if: needs.plan.outputs.release == 'true' && inputs.image != ''
+    # No `permissions:` here, deliberately, even though this pushes to GHCR and
+    # clearly wants `packages: write`.
+    #
+    # GitHub validates a nested job's requested permissions against the caller's
+    # grant STATICALLY, at workflow-parse time -- before any `if:` is evaluated.
+    # So declaring `packages: write` here makes the whole workflow invalid for
+    # any caller that does not grant it, including callers where `image` is
+    # empty and this job never runs. That is not hypothetical: it is what broke
+    # this repo's own first release run.
+    #
+    # Inheriting instead means image callers grant `packages: write` and get it,
+    # and callers that build nothing are unaffected. The cost is that this job
+    # also inherits `contents: write` from an image caller rather than the
+    # `contents: read` it needs; there is no way to narrow one scope without
+    # declaring the other.
+    #
+    # docker-build.yaml declares no permissions either, for the same reason --
+    # see its header. That is what makes calling it from here safe: nothing in
+    # the nested chain asks for a scope, so nothing can invalidate a caller's
+    # workflow file.
+    #
+    # ⚠️ BOOTSTRAP PIN, not the final state. This becomes `@v1` in a follow-up
+    # PR once v1.5.0 has shipped and moved the tag.
+    #
+    # It cannot be @v1 today: self-release.yaml runs THIS file locally
+    # (`uses: ./.github/workflows/release.yaml`), so the merge that adds
+    # docker-build.yaml is also the run that parses this reference -- and @v1
+    # still points at a commit with no such file. If GitHub resolves a nested
+    # `uses:` at parse time, that would fail the very release meant to publish
+    # it, leaving no way out but a fix-forward.
+    #
+    # The SHA below is the commit that introduced docker-build.yaml, so it
+    # resolves before, during and after the release, and survives the branch
+    # being deleted. Renovate will not touch it -- renovate.json disables
+    # updates for this repo's references to itself -- so the flip to @v1 is a
+    # deliberate manual step, not something that happens on its own.
+    uses: jcwearn/workflows/.github/workflows/docker-build.yaml@9e3fb46466ec051823e1699904ef83f02510c11d
+    with:
+      image: ${{ inputs.image }}
+      context: ${{ inputs.image-context }}
+      tags: ${{ needs.plan.outputs.tags }}
+      # The resolved merge commit, not the event ref: the image must be built
+      # from exactly the commit `publish` is about to tag, not from wherever
+      # main has moved to since.
+      ref: ${{ needs.plan.outputs.sha }}
 
   publish:
     name: Tag and release
