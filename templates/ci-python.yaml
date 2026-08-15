@@ -3,17 +3,29 @@ name: CI
 # Copy to .github/workflows/ci.yml in a Python repo.
 #
 # Before this works, the repo must satisfy the contract python-ci.yaml relies
-# on:
+# on. Two of those requirements are shared:
 #
 #   .python-version       the interpreter, tracking what the repo's CONTAINER
 #                         runs rather than the newest release -- check with
-#                         `docker run --rm <base image> python -V`
-#   requirements.txt      runtime dependencies
-#   requirements-dev.txt  starting `-r requirements.txt`, and pinning ruff and
-#                         pytest exactly
+#                         `docker run --rm <base image> python -V`. A repo with
+#                         no container pins what its own toolchain runs.
 #   ruff.toml             not pyproject.toml, unless the repo really is a
 #                         package
 #   tests                 discoverable by pytest from the repo root
+#
+# and the rest depend on how the repo installs. There is no input to choose --
+# committing a uv.lock is what selects uv; otherwise pip.
+#
+#   pip repo:
+#     requirements.txt      runtime dependencies
+#     requirements-dev.txt  starting `-r requirements.txt`, and pinning ruff and
+#                           pytest exactly
+#
+#   uv repo:
+#     uv.lock               committed, and current -- `uv sync --locked` fails
+#                           on drift from pyproject.toml
+#     pyproject.toml        with ruff and pytest pinned exactly in
+#                           [dependency-groups] dev
 
 on:
   push:

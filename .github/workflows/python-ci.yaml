@@ -13,21 +13,47 @@ name: Python CI
 #                                  (actionlint in ci.yaml, gitleaks in
 #                                   public-sync.yaml)
 #   Tool the REPO declares      -> exact pin in the repo's manifest, Renovate
-#                                  bumps it there (ruff in requirements-dev.txt,
-#                                   oxlint and prettier in devDependencies)
+#                                  bumps it there (ruff in requirements-dev.txt
+#                                   or in [dependency-groups] dev, oxlint and
+#                                   prettier in devDependencies)
 #
 # CONTRACT, not inputs. As in node-ci.yaml, each of these is enforced by a tool
-# that already fails with a good message:
+# that already fails with a good message. Two requirements are shared:
 #
-#   .python-version        -> setup-python errors without it
-#   requirements-dev.txt   -> pip install; it should `-r requirements.txt`
-#   ruff in that file      -> the ruff steps fail as command-not-found
+#   .python-version        -> see below; enforcement differs by path
 #   tests discoverable from the repo root -> pytest
+#
+# and the rest depend on how the repo installs. A repo that commits a uv.lock
+# gets uv; otherwise pip. There is no `package-manager:` input on purpose -- a
+# committed lockfile IS the declaration, in exactly the way package-lock.json
+# and requirements-dev.txt already are, and an input would be a second, forgeable
+# copy of a fact already on disk. Reading the tree cannot be wrong.
+#
+#   pip path:
+#     .python-version      -> setup-python errors without it
+#     requirements-dev.txt -> pip install; it should `-r requirements.txt`
+#     ruff in that file    -> the ruff steps fail as command-not-found
+#
+#   uv path:
+#     .python-version      -> the DETECT STEP errors without it. This is the one
+#                             contract line no tool enforces: uv would silently
+#                             fall back to requires-python and resolve an
+#                             interpreter nobody chose.
+#     uv.lock              -> uv sync --locked, which also fails on drift from
+#                             pyproject.toml
+#     ruff and pytest      -> pinned in pyproject's [dependency-groups] dev
+#
+# The branch is at SETUP ONLY. Lint, Format and Test are unconditional and
+# identical on both paths, because the install steps converge on one
+# postcondition -- the tools are on PATH -- instead of the check steps learning
+# how they got there. That is what keeps "what CI checks" one description rather
+# than two that drift.
 #
 # One pin worth understanding: .python-version should track the interpreter the
 # repo's CONTAINER runs, not the newest release. withjoy-exporter ran CI on
 # 3.14 while its playwright base image shipped 3.12.3, so every green run was
-# verifying an interpreter production never executed.
+# verifying an interpreter production never executed. A repo with no container
+# pins whatever its own toolchain runs.
 
 on:
   workflow_call:
@@ -66,7 +92,45 @@ jobs:
           # Nothing in this job pushes.
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      # Only the setup half of this job branches. The three tool steps below are
+      # shared, unconditional, and identical on both paths -- which is the whole
+      # point of installing into a venv on PATH rather than prefixing each one
+      # with `uv run`.
+      - name: Detect package manager
+        id: pm
+        run: |
+          set -euo pipefail
+          # uv.lock is checked FIRST, so a repo holding both wins as uv. That is
+          # a real state rather than a tie to break: `uv export > requirements.txt`
+          # to feed a container build leaves a repo with both files, and the lock
+          # is the more specific claim about what it resolves to.
+          if [ -f uv.lock ]; then
+            manager=uv
+            # setup-uv has no python-version-file input, and `uv sync` would
+            # quietly fall back to pyproject's requires-python RANGE if
+            # .python-version were missing -- resolving to an interpreter nobody
+            # chose, which is the exact failure the pin exists to prevent.
+            # setup-python fails loudly on the pip path; this is its equivalent,
+            # and it is the one contract line no tool on this path enforces.
+            if [ ! -f .python-version ]; then
+              echo "::error::uv.lock is present but .python-version is missing. Pin the interpreter this repo runs: uv python pin 3.13"
+              exit 1
+            fi
+            echo "python-version=$(tr -d '[:space:]' < .python-version)" >> "$GITHUB_OUTPUT"
+          elif [ -f requirements-dev.txt ]; then
+            manager=pip
+          else
+            echo "::error::no uv.lock and no requirements-dev.txt -- nothing to install from."
+            exit 1
+          fi
+          echo "manager=$manager" >> "$GITHUB_OUTPUT"
+          # Echoed because the branch is implicit. Someone reading a red run
+          # should not have to infer which half of this job executed.
+          echo "Package manager: $manager"
+
+      - name: Set up Python (pip)
+        if: steps.pm.outputs.manager == 'pip'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version-file: '.python-version'
           cache: 'pip'
@@ -74,8 +138,67 @@ jobs:
             requirements.txt
             requirements-dev.txt
 
-      - name: Install
+      # The trailing comment is an EXACT version here, not the series to follow.
+      # astral-sh stopped publishing a floating major tag after v7, so there is
+      # no `v10` for Renovate to track and every release arrives as its own PR.
+      # This is the one pin in the repo that does not read `# vN`. Do not
+      # "correct" it.
+      #
+      # enable-cache caches uv's download cache, keyed on the lockfile by
+      # setup-uv's own default. Deliberately no cache-dependency-glob: the pip
+      # path's hand-maintained list of manifests is exactly the thing that rots
+      # silently when a repo's layout changes, and there is no reason to import
+      # that problem here.
+      - name: Set up uv (uv)
+        if: steps.pm.outputs.manager == 'uv'
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          # Read from .python-version rather than hardcoded, so the pin stays
+          # the repo's to make. setup-uv has no python-version-file input, which
+          # is why the detect step has to read the file itself.
+          python-version: ${{ steps.pm.outputs.python-version }}
+
+      - name: Install (pip)
+        if: steps.pm.outputs.manager == 'pip'
         run: pip install -r requirements-dev.txt
+
+      - name: Install (uv)
+        if: steps.pm.outputs.manager == 'uv'
+        run: |
+          set -euo pipefail
+          # --locked is the whole lockfile check on this path: it refuses to run
+          # when uv.lock is not current with pyproject.toml, and refuses to
+          # quietly rewrite it. --frozen would install from the lock without
+          # comparing to the manifest at all -- faster, and wrong here, because
+          # a dependency added to pyproject.toml that nobody re-locked would go
+          # green.
+          #
+          # node-ci.yaml additionally recomputes package-lock.json and diffs it.
+          # There is deliberately no uv counterpart, and the asymmetry is the
+          # point rather than an oversight: `npm install --package-lock-only` is
+          # a pure function of the manifest and the lock, but re-resolving with
+          # uv consults the index AS IT IS TODAY, so a newly published
+          # transitive dependency would turn that check red on a repo nobody
+          # touched. `uv lock --check` is the same assertion as --locked, not a
+          # stronger one.
+          #
+          # The `dev` dependency group installs by default. That is what puts
+          # ruff and pytest here, and it is the uv spelling of
+          # requirements-dev.txt.
+          uv sync --locked
+          # This line is the reason the three steps below stay unconditional.
+          # setup-python already leaves pip's scripts on PATH; uv leaves them in
+          # .venv, so the same postcondition gets written by hand and the check
+          # steps never learn which path installed them.
+          #
+          # Prepending here rather than prefixing every command with `uv run`
+          # also avoids a prefix variable that is empty on the pip path: it
+          # cannot be quoted (an empty argv[0] is a command-not-found) and so
+          # cannot be written in a form shellcheck accepts. It sidesteps `uv
+          # run` implicitly re-syncing the environment the line above just
+          # pinned, too.
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
 
       # --output-format=github turns findings into inline PR annotations rather
       # than a wall of text in the log. That is what makes a staged rule-set
