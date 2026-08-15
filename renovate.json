@@ -1,5 +1,18 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:best-practices"],
-  "addLabels": ["release:patch"]
+  "addLabels": ["release:patch"],
+  "packageRules": [
+    {
+      "description": [
+        "Leave this repo's references to itself alone.",
+        "config:best-practices pins every action to a digest, which is exactly right for a CONSUMER: the pin is how you choose when to take a change. Inside this repo there is no such choice to make. node-ci.yaml and .github/actions/extra-env ship in the same release, so pinning one to a digest of the other decouples two halves of a single artifact -- a release that changed a workflow and its action together would publish the new workflow still calling the old action, until a separate Renovate PR caught up.",
+        "templates/ is covered by the same rule for a different reason: those files are copied verbatim into other repos, so a template carrying a digest hands the next repo a stale pin instead of the @v1 that Renovate is meant to resolve for it there.",
+        "This does not weaken supply-chain posture. Third-party actions (actions/checkout, docker/build-push-action) are unaffected and still get pinned; the only thing exempted is this repo referring to code that is already in the same commit."
+      ],
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["jcwearn/workflows"],
+      "enabled": false
+    }
+  ]
 }
