@@ -1,0 +1,74 @@
+name: Scorecard
+
+# Publishes this repo's OpenSSF Scorecard results, which exists to fix a broken
+# image rather than to chase a number.
+#
+# The shared Renovate preset (jcwearn/renovate-config) extends
+# `security:openssf-scorecard`, which appends an OpenSSF column to every PR row
+# whose dependency has a github.com source URL:
+#
+#   https://api.securityscorecards.dev/projects/github.com/{{sourceRepo}}/badge
+#
+# That API only serves repos that have published results, and it 404s for
+# anything it has never seen -- which renders in the PR body as a red
+# `invalid repo path` chip. This repo is the only jcwearn dependency that hits
+# it: consumers reach it through the github-actions manager, which always
+# resolves a source repo, whereas the ghcr.io/jcwearn/* images resolve none and
+# so render an empty cell. So publishing here fixes the badge in every
+# consuming repo's Renovate PRs at once.
+#
+# The alternative was blanking the column for jcwearn/** sources in the shared
+# preset. That hides the symptom in one line; this makes the badge true.
+#
+# Not a reusable workflow, and deliberately not mirrored into templates/. Every
+# repo that wants this needs its own copy running on its own default branch --
+# there is nothing to parameterise, and a consumer calling it from here would
+# publish results for the caller anyway.
+
+on:
+  push:
+    # Scorecard only supports the default branch. A pull_request trigger is
+    # marked experimental upstream and would publish pre-merge results.
+    branches: [main]
+  schedule:
+    # Weekly. Most checks read repo settings and branch protection rather than
+    # the tree, so they drift without any commit having happened.
+    - cron: "30 1 * * 6"
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Uploading the SARIF to the Security tab.
+      security-events: write
+      # The OIDC token publish_results uses to prove to the OpenSSF API that
+      # these results came from a run in this repo. Without it the analysis
+      # still runs and the badge still 404s, which is the whole point.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      # The upstream example also uploads results.sarif as a build artifact.
+      # Dropped: the Security tab is the copy anyone would actually read, and a
+      # second one expiring out of the Actions tab is not worth the step.
+      - name: Upload to code scanning
+        uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4
+        with:
+          sarif_file: results.sarif
+
+# Expect Branch-Protection to score low or Inconclusive. That check reads the
+# branch protection API, which needs a PAT with admin rights -- a standing
+# admin-scoped secret is a worse trade than a lower score on one check, and it
+# has no bearing on whether the badge resolves.
