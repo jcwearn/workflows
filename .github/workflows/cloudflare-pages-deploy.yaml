@@ -1,0 +1,192 @@
+name: Cloudflare Pages Deploy
+
+# Builds a Pages site and deploys it with the calling repo's OWN Cloudflare
+# token, replacing Cloudflare's dashboard Git integration.
+#
+# The integration it replaces authenticates through a single account-level
+# Cloudflare GitHub App shared by every repo. That connection cannot be split
+# per app, which is the whole reason deploys move here: each caller now holds a
+# token minted and scoped for it alone.
+#
+# Be clear about what that does and does not buy. "Cloudflare Pages Write"
+# exists only at ACCOUNT scope -- Cloudflare offers no per-project narrowing --
+# so a leaked token can still edit every Pages project on the account. What
+# per-app tokens buy is independent rotation, independent revocation, and
+# per-app attribution in the audit log. That is a real improvement and it is not
+# isolation.
+#
+# PRESERVING PREVIEWS IS A REQUIREMENT, NOT A BONUS. The branch-alias URL scheme
+# is a property of the Pages PROJECT, not of the Git integration: Cloudflare
+# builds `<branch>.<project>.pages.dev` from whatever --branch it is given. So
+# passing github.ref_name reproduces exactly the URLs the integration produced,
+# and a branch bookmarked on a phone keeps working and keeps updating.
+#
+# Triggered by the caller on `push` to ANY branch, not on pull_request. That is
+# what the Git integration did -- a branch pushed without a PR still got a
+# preview -- and wiring both would double-deploy every PR branch.
+
+on:
+  workflow_call:
+    inputs:
+      project-name:
+        description: >-
+          The Cloudflare Pages PROJECT name, which is not always the repo name.
+          borderline deploys to borderline-golf, priceatronic2 to priceatronic,
+          anupamaandjackson to anupama-and-jackson.
+
+          Getting this wrong does not fail. `wrangler pages deploy` CREATES a
+          project that does not exist, so a typo yields a second, empty project
+          and a site that silently stops updating while the old one keeps
+          serving. Check it against the dashboard, not against the repo name.
+        required: true
+        type: string
+      output-dir:
+        description: "Directory the build writes, relative to the repo root."
+        required: false
+        default: dist
+        type: string
+      build-command:
+        description: "npm script invocation that produces output-dir."
+        required: false
+        default: npm run build
+        type: string
+      production-branch:
+        description: >-
+          The project's production branch. A deploy whose --branch equals this
+          is a production deploy; anything else is a preview. That single
+          comparison is the only difference between the two paths here.
+        required: false
+        default: main
+        type: string
+      timeout-minutes:
+        description: "Job timeout. Raise for repos with a long build."
+        required: false
+        default: 10
+        type: number
+      extra-env:
+        description: >-
+          Environment variables for the build, KEY=value, one per line. For
+          build-time switches the caller's own committed scripts already read.
+        required: false
+        default: ""
+        type: string
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
+      CLOUDFLARE_ACCOUNT_ID:
+        required: true
+
+permissions:
+  contents: read
+  # For the sticky preview comment. Only reached when a PR exists for the
+  # branch being pushed.
+  pull-requests: write
+
+concurrency:
+  # github.workflow and github.ref are the CALLER's inside a reusable workflow,
+  # so this is one group per calling workflow per ref. Callers must NOT declare
+  # their own -- two groups for one logical run means the outer holds a slot
+  # while the inner queues behind it.
+  group: cloudflare-pages-deploy-${{ github.workflow }}-${{ github.ref }}
+  # Superseded PREVIEW builds are noise: the branch alias points at the newest
+  # deployment regardless, so an overtaken one has nothing to contribute.
+  # Production must never be cancelled -- a cancelled deploy leaves the site on
+  # the previous commit behind a green check, which is the worst of both.
+  cancel-in-progress: ${{ github.ref_name != inputs.production-branch }}
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Nothing here pushes a ref.
+          persist-credentials: false
+
+      # Same .node-version Cloudflare Pages read, so moving the build off their
+      # builder does not silently change the Node it runs on.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: '.node-version'
+          cache: 'npm'
+
+      # The same composite action node-ci.yaml uses, so the validation is the
+      # code tests/test-extra-env.sh already exercises rather than a second
+      # copy of it that drifts. Applied before the build, job-wide.
+      - name: Apply extra-env
+        if: inputs.extra-env != ''
+        uses: jcwearn/workflows/.github/actions/extra-env@v1
+        with:
+          vars: ${{ inputs.extra-env }}
+
+      - run: npm ci
+
+      - name: Build
+        run: ${{ inputs.build-command }}
+
+      - name: Deploy
+        id: deploy
+        uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # --branch is the entire production-vs-preview decision. Equal to the
+          # project's production branch, Cloudflare treats it as production;
+          # anything else becomes a preview at <branch>.<project>.pages.dev.
+          #
+          # --commit-hash keeps the dashboard's deployment list showing the real
+          # commit. Without it every deploy reads as "unknown", because that
+          # metadata came from the Git integration we just stopped using.
+          command: >-
+            pages deploy ${{ inputs.output-dir }}
+            --project-name=${{ inputs.project-name }}
+            --branch=${{ github.ref_name }}
+            --commit-hash=${{ github.sha }}
+            --commit-dirty=false
+
+      # Only when a PR exists for this branch. The deploy already happened
+      # either way -- this is reporting, so it must never fail the job.
+      - name: Comment the preview URL
+        if: >-
+          always()
+          && steps.deploy.outcome == 'success'
+          && github.ref_name != inputs.production-branch
+        continue-on-error: true
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          ALIAS_URL: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
+          DEPLOY_URL: ${{ steps.deploy.outputs.deployment-url }}
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const prs = await github.paginate(github.rest.pulls.list,
+              {owner, repo, state: 'open', head: `${owner}:${context.ref.replace('refs/heads/','')}`});
+            if (prs.length === 0) return;  // pushed without a PR; nothing to comment on
+
+            const alias = process.env.ALIAS_URL;
+            const deploy = process.env.DEPLOY_URL;
+            const marker = '<!-- cf-pages-preview -->';
+            const body = [
+              marker,
+              '### Preview',
+              '',
+              `**[${alias}](${alias})** — tracks this branch. Bookmark this one;`,
+              'it keeps pointing at the latest commit here.',
+              '',
+              `<sub>This exact build: [${deploy}](${deploy}) — immutable, stays available.</sub>`,
+            ].join('\n');
+
+            for (const pr of prs) {
+              // Edit one comment rather than stacking a new one per push.
+              const comments = await github.paginate(github.rest.issues.listComments,
+                {owner, repo, issue_number: pr.number});
+              const existing = comments.find(c => c.body.startsWith(marker));
+              if (existing) {
+                await github.rest.issues.updateComment({owner, repo, comment_id: existing.id, body});
+              } else {
+                await github.rest.issues.createComment({owner, repo, issue_number: pr.number, body});
+              }
+            }
