@@ -149,6 +149,16 @@ jobs:
 
       # Only when a PR exists for this branch. The deploy already happened
       # either way -- this is reporting, so it must never fail the job.
+      #
+      # Formatted to match Cloudflare's own PR comment, deliberately. While the
+      # project stays Git-connected Cloudflare posts one too, and two comments
+      # in different shapes describing the same deploy is worse than two in the
+      # same shape. If Cloudflare's stops appearing, this one already looks like
+      # what everyone is used to.
+      #
+      # "View logs" points at the Actions run rather than the Cloudflare
+      # dashboard, because that is where the build now happens -- Cloudflare
+      # only ever sees the finished upload.
       - name: Comment the preview URL
         if: >-
           always()
@@ -159,24 +169,35 @@ jobs:
         env:
           ALIAS_URL: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
           DEPLOY_URL: ${{ steps.deploy.outputs.deployment-url }}
+          PROJECT_NAME: ${{ inputs.project-name }}
         with:
           script: |
             const {owner, repo} = context.repo;
+            const branch = context.ref.replace('refs/heads/', '');
             const prs = await github.paginate(github.rest.pulls.list,
-              {owner, repo, state: 'open', head: `${owner}:${context.ref.replace('refs/heads/','')}`});
+              {owner, repo, state: 'open', head: `${owner}:${branch}`});
             if (prs.length === 0) return;  // pushed without a PR; nothing to comment on
 
             const alias = process.env.ALIAS_URL;
             const deploy = process.env.DEPLOY_URL;
+            const project = process.env.PROJECT_NAME;
+            const short = context.sha.slice(0, 7);
+            const logs = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
             const marker = '<!-- cf-pages-preview -->';
+
+            const row = (k, v) => `<tr><td><strong>${k}</strong></td><td>${v}</td></tr>`;
             const body = [
               marker,
-              '### Preview',
+              `## Deploying ${project} with &nbsp;⚡&nbsp; Cloudflare Pages`,
               '',
-              `**[${alias}](${alias})** — tracks this branch. Bookmark this one;`,
-              'it keeps pointing at the latest commit here.',
+              '<table>',
+              row('Latest commit:', `<code>${short}</code>`),
+              row('Status:', '&nbsp;✅&nbsp; Deploy successful!'),
+              row('Preview URL:', `<a href="${deploy}">${deploy}</a>`),
+              row('Branch Preview URL:', `<a href="${alias}">${alias}</a>`),
+              '</table>',
               '',
-              `<sub>This exact build: [${deploy}](${deploy}) — immutable, stays available.</sub>`,
+              `[View logs](${logs})`,
             ].join('\n');
 
             for (const pr of prs) {
