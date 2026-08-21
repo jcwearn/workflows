@@ -304,8 +304,44 @@ git tag -f -a v1 -m "v1 -> $V" "$SHA" && git push --force origin refs/tags/v1
 gh release create "$V" --verify-tag --title "$V" --generate-notes
 ```
 
+`$SHA` is `origin/main` and not some earlier commit for a reason beyond taste: a tag
+naming a commit whose `.github/workflows` tree differs from the tip is refused on
+every write path unless the token carries `workflows`. From a laptop that is the
+OAuth-App twin of the deploy-key problem above — `gh auth refresh -s workflow
+--hostname github.com` grants it, at the cost of widening the CLI account-wide.
+
 Then fix forward. Don't delete the bad tag if a consumer may already have resolved
 it — cut the next patch instead.
+
+## Reference: the release App
+
+`release.yaml` takes optional `client-id`/`private-key` secrets and falls back to
+`GITHUB_TOKEN` without them. This repo needs them, because every PR here edits
+`.github/workflows/**` and `GITHUB_TOKEN` cannot push a tag naming workflow content
+that isn't on the tip — see the failure-mode table below.
+
+App creation is browser-only; the rest is CLI.
+
+1. <https://github.com/settings/apps/new>. Name it something like `jcwearn-release`,
+   homepage anything, **uncheck Webhook → Active**.
+2. Repository permissions — exactly two, both **Read and write**: **Contents** and
+   **Workflows**. Nothing else. Leave account permissions alone.
+3. "Only on this account", then Create. Note the **Client ID** (`Iv23li…`, not the
+   numeric App ID — `create-github-app-token` deprecated that input), generate a
+   **private key** (downloads a `.pem`), and **Install App** onto
+   `jcwearn/workflows` only.
+4. Add the secrets, and delete the key file afterwards — it is a credential:
+
+```bash
+gh secret set RELEASE_APP_CLIENT_ID --repo jcwearn/workflows --body 'Iv23li...'
+gh secret set RELEASE_APP_PRIVATE_KEY --repo jcwearn/workflows < ~/Downloads/jcwearn-release.*.pem
+rm ~/Downloads/jcwearn-release.*.pem
+```
+
+Verify on the next release: the `Mint an app token` step runs instead of being
+skipped, and the tag is attributed to the App rather than to `github-actions[bot]`.
+Rotate by generating a second key, re-running `gh secret set`, then deleting the old
+key in the App's settings — in that order, so no release runs against no key.
 
 ## Failure modes seen so far
 
@@ -319,4 +355,6 @@ it — cut the next patch instead.
 | Commits push fine but show no Verified badge | Key registered as Authentication instead of Signing, or committer email not on the account | Re-add as **Signing Key**; check `signer-email`. Diagnose with `gh api repos/OWNER/REPO/commits --jq '.[0].commit.verification'` |
 | `error parsing called workflow ... workflow was not found` | The `v1` tag is missing or was deleted | `git ls-remote --tags https://github.com/jcwearn/workflows`, then re-create it at the newest `vX.Y.Z` |
 | Release run green through build, then 403 on `git push origin refs/tags/...` | Caller job omitted `permissions: contents: write`; the account default is `read` | Add the `permissions:` block to the job that has `uses:` |
+| `! [remote rejected] vX.Y.Z ... refusing to allow a GitHub App to create or update workflow ... without \`workflows\` permission` | The tagged commit carries `.github/workflows` content that isn't on the default branch tip — a later PR edited a workflow file before this release pushed. Not a `permissions:` problem: there is no `permissions: workflows:` key, and `POST git/refs` and the releases API refuse it identically (proven in run 32497730627) | Pass `client-id`/`private-key` to `release.yaml` for a GitHub App with `contents: write` + `workflows: write`. Nothing to retry without it — cut that one by hand at `origin/main` |
+| `fatal: tag 'vX.Y.Z' already exists`, on a re-run only | "Re-run failed jobs" keeps the cached `plan` outputs, so the retry carries a version another release published in the meantime | "Re-run **all** jobs". `publish-tag` now catches this and says so instead |
 | `Invalid workflow file ... is requesting 'packages: write', but is only allowed 'packages: none'` | A nested job **declares** a scope the caller didn't grant. Checked statically, so it fires even when that job's `if:` would skip it | Either grant the scope on the calling job, or drop the `permissions:` block from the nested job so it inherits |
