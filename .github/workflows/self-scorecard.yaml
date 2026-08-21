@@ -54,7 +54,10 @@ jobs:
           persist-credentials: false
 
       - name: Run analysis
-        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2
+        # Pinned to a full version, unlike the other actions here: upstream
+        # publishes no floating v2 tag, so a `# v2` comment gives Renovate
+        # nothing to resolve and it drops the dependency entirely.
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
         with:
           results_file: results.sarif
           results_format: sarif
