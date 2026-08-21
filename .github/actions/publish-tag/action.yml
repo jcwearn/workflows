@@ -1,0 +1,37 @@
+name: Publish tag
+description: Create the immutable vX.Y.Z tag, and optionally re-point the moving vX alias.
+
+# Composite for the same reason as next-version: `uses: ./...` inside a
+# reusable workflow resolves against the CALLER's checkout, so the script has
+# to travel with the action.
+#
+# Requires a checkout of the calling repository with fetch-depth: 0 (the stale
+# version guard reads the tag list) and persisted push credentials.
+
+inputs:
+  version:
+    description: "Immutable tag to create, e.g. v1.2.3"
+    required: true
+  major:
+    description: "Moving major alias, e.g. v1. Only used when move-major-tag is true"
+    required: true
+  sha:
+    description: "Commit both tags name"
+    required: true
+  move-major-tag:
+    description: "Re-point the moving vX alias at this release"
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        MAJOR: ${{ inputs.major }}
+        SHA: ${{ inputs.sha }}
+        MOVE_MAJOR: ${{ inputs.move-major-tag }}
+      run: |
+        set -uo pipefail
+        "$GITHUB_ACTION_PATH/publish-tag.sh"
