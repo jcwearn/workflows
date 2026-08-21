@@ -37,6 +37,17 @@ name: Release
 #         contents: write      # git tags + GitHub Release
 #         packages: write      # only when `image` is set
 #       uses: jcwearn/workflows/.github/workflows/release.yaml@v1
+#
+# One failure looks like an under-granted scope and is not one. GitHub refuses
+# any write -- git push, POST git/refs and the releases API alike -- that would
+# introduce .github/workflows content not already on the default branch tip,
+# unless the token carries `workflows`. GITHUB_TOKEN cannot: there is no
+# `permissions: workflows:` key to grant. So a release whose merge commit fell
+# behind a LATER PR that edited a workflow file cannot tag itself, and no
+# amount of `permissions:` fixes it. Pass the optional client-id/private-key
+# secrets to release with a GitHub App instead. Proven case by case in run
+# 32497730627: the same commit is taggable when its .github/workflows tree
+# matches the tip and refused when it does not.
 
 on:
   workflow_call:
@@ -76,6 +87,34 @@ on:
         required: false
         default: false
         type: boolean
+    secrets:
+      client-id:
+        description: >-
+          Client ID of a GitHub App installed on the calling repo, holding
+          contents:write and workflows:write. The Iv23li... value on the App's
+          settings page, not the numeric App ID -- create-github-app-token
+          deprecated that input in favour of this one. Optional, and only
+          needed by repos that keep workflow files.
+
+          GitHub refuses any write -- git push, POST git/refs and the releases
+          API alike -- that would introduce .github/workflows content not
+          already on the default branch tip, unless the token carries
+          `workflows`. GITHUB_TOKEN never can: there is no
+          `permissions: workflows:` key. So tagging a merge commit fails
+          whenever a LATER PR changed a workflow file before this release got
+          to push -- which is a race, and reads as an intermittent failure.
+          Run 32492220999 is the worked example: two Renovate PRs merged 25s
+          apart, both touching cloudflare-pages-deploy.yaml.
+
+          Leave both unset and the workflow uses GITHUB_TOKEN, which is right
+          for any repo whose releases do not lag a workflow-file change.
+
+          Passed as secrets rather than inputs deliberately: a reusable
+          workflow prints its inputs into the run log.
+        required: false
+      private-key:
+        description: "Private key for client-id. Both must be set, or neither."
+        required: false
     outputs:
       released:
         description: "true when a version was published, false for release:skip"
@@ -253,46 +292,48 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      # The `secrets` context is not available in a step-level `if:`, but it is
+      # available here -- so the presence check has to be hoisted to the job.
+      HAS_APP: ${{ secrets.client-id != '' && secrets.private-key != '' }}
     steps:
+      # Skipped when the caller passed no app, and a skipped step's outputs are
+      # empty, so the `||` below falls back to GITHUB_TOKEN on its own.
+      - name: Mint an app token
+        id: app-token
+        if: env.HAS_APP == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ secrets.client-id }}
+          private-key: ${{ secrets.private-key }}
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.plan.outputs.sha }}
           fetch-depth: 0
           # Credentials are persisted on purpose here: this is the one job
-          # that pushes.
+          # that pushes. The token is what decides whether a tag naming
+          # workflow changes can be pushed at all -- see the client-id secret.
+          token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
 
+      # Pinned to the commit that ADDS this action, not @v1, and only until
+      # the release below publishes. self-release.yaml runs release.yaml
+      # locally, so the merge that introduces publish-tag is also the run that
+      # has to resolve it -- and at that moment @v1 still points at a commit
+      # with no such directory. Exactly the bootstrap docker-build.yaml needed
+      # at v1.5.0; the follow-up PR flips this back to @v1, which is what it
+      # should read from then on. Renovate leaves it alone either way.
       - name: Tag
-        env:
-          VERSION: ${{ needs.plan.outputs.version }}
-          MAJOR: ${{ needs.plan.outputs.major }}
-          SHA: ${{ needs.plan.outputs.sha }}
-          MOVE_MAJOR: ${{ inputs.move-major-tag }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # Immutable first, and deliberately not forced: if the ref somehow
-          # exists the push is rejected and the release stops here rather than
-          # rewriting something a consumer may already have pinned.
-          git tag -a "$VERSION" -m "$VERSION" "$SHA"
-          git push origin "refs/tags/${VERSION}"
-          echo "Pushed ${VERSION} -> ${SHA}"
-
-          if [ "$MOVE_MAJOR" = "true" ]; then
-            # Re-point the moving alias. The force is confined to this one
-            # refspec -- never a bare `git push --force`. Every immutable
-            # vX.Y.Z above stays exactly where it was.
-            git tag -f -a "$MAJOR" -m "${MAJOR} -> ${VERSION}" "$SHA"
-            git push --force origin "refs/tags/${MAJOR}"
-            echo "Moved ${MAJOR} -> ${VERSION}"
-          else
-            echo "move-major-tag is off; published ${VERSION} only."
-          fi
+        uses: jcwearn/workflows/.github/actions/publish-tag@9dad365bd6ab56b342cc896dda6669943e9561e3
+        with:
+          version: ${{ needs.plan.outputs.version }}
+          major: ${{ needs.plan.outputs.major }}
+          sha: ${{ needs.plan.outputs.sha }}
+          move-major-tag: ${{ inputs.move-major-tag }}
 
       - name: GitHub Release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.plan.outputs.version }}
           PREVIOUS: ${{ needs.plan.outputs.previous }}
         run: |

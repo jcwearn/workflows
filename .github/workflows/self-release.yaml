@@ -32,3 +32,11 @@ jobs:
     uses: ./.github/workflows/release.yaml
     with:
       move-major-tag: true
+    # Every PR here edits .github/workflows, so this repo is the worst case for
+    # the restriction described in release.yaml's header: a release that lags
+    # one merge behind cannot push its own tag with GITHUB_TOKEN. The App
+    # carries workflows:write; unset secrets fall back to GITHUB_TOKEN, so this
+    # is inert until both are configured.
+    secrets:
+      client-id: ${{ secrets.RELEASE_APP_CLIENT_ID }}
+      private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

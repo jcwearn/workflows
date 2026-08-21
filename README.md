@@ -777,7 +777,51 @@ jobs:
 
 Outputs: `released` (`true`/`false`) and `version` (e.g. `v1.2.3`, empty when skipped).
 
-**Secrets: none.** `GITHUB_TOKEN` only.
+### Secrets
+
+| Secret | Required | Description |
+|---|---|---|
+| `client-id` | no | Client ID (`Iv23li…`) of a GitHub App installed on the calling repo, with `contents: write` and `workflows: write`. Not the numeric App ID — `create-github-app-token` deprecated that input |
+| `private-key` | no | Private key for it. Set both, or neither |
+
+Leave both unset and everything runs on `GITHUB_TOKEN`, which is right for most
+repos. Set them for a repo whose PRs edit `.github/workflows/**`, because of a rule
+that looks like an under-granted `permissions:` scope and is not one:
+
+> GitHub refuses any write — `git push`, `POST git/refs` and the releases API alike —
+> that would introduce `.github/workflows` content **not already on the default branch
+> tip**, unless the token carries `workflows`. `GITHUB_TOKEN` never can: there is no
+> `permissions: workflows:` key to grant.
+
+Tagging trips this whenever a *later* PR changed a workflow file between the merge and
+the push, so the release cannot tag its own merge commit:
+
+```
+! [remote rejected] v1.7.3 -> v1.7.3 (refusing to allow a GitHub App to create or
+  update workflow `.github/workflows/cloudflare-pages-deploy.yaml` without
+  `workflows` permission)
+```
+
+It reads as flaky because it depends on how close together two PRs merged. It isn't:
+[run 32497730627](https://github.com/jcwearn/workflows/actions/runs/32497730627) tags
+one commit four ways and the answer is the same every time — allowed when the commit's
+`.github/workflows` tree matches the tip, refused when it doesn't, on every write path.
+Being behind the tip is fine on its own.
+
+They're **secrets rather than inputs** because a reusable workflow prints its inputs
+into the run log.
+
+```yaml
+jobs:
+  release:
+    if: github.event.pull_request.merged == true
+    permissions:
+      contents: write
+    uses: jcwearn/workflows/.github/workflows/release.yaml@v1
+    secrets:
+      client-id: ${{ secrets.RELEASE_APP_CLIENT_ID }}
+      private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+```
 
 **The caller job must declare `permissions:`.** This account's default
 `GITHUB_TOKEN` permission is `read`, and a reusable workflow can only *narrow* what
@@ -831,6 +875,12 @@ Queue depth is 1, so merging three PRs in quick succession can cancel the middle
 Recover with "Re-run all jobs". Don't "fix" this by allowing cancellation; it trades
 a benign miss for a torn release.
 
+**"Re-run all jobs", not "Re-run failed jobs".** The latter keeps the successful `plan`
+job's outputs, so the retry re-uses a version another release may have published since.
+`publish-tag` checks for that and says so, rather than letting it surface as
+`fatal: tag 'vX.Y.Z' already exists` — a message that points at `next-version` and
+wastes your time there.
+
 ## `require-release-label.yaml`
 
 Fails a PR that doesn't carry exactly one release label, so the mistake is visible
@@ -869,6 +919,7 @@ once.
 | `release-label` | Resolve a PR's labels into a bump, or a decision not to release |
 | `next-version` | Compute the next semver tag from the tags already in the repo |
 | `extra-env` | Validate `KEY=value` lines and export them to the job environment |
+| `publish-tag` | Push the immutable `vX.Y.Z` tag, re-point the moving `vX` alias, and explain a refused push |
 
 `extra-env` is the newest and makes the case for the rule plainly: it is the one place
 a caller's string reaches something a shared workflow executes, and writing
