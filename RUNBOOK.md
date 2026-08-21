@@ -339,7 +339,9 @@ rm ~/Downloads/jcwearn-release.*.pem
 ```
 
 Verify on the next release: the `Mint an app token` step runs instead of being
-skipped, and the tag is attributed to the App rather than to `github-actions[bot]`.
+skipped, and the GitHub Release is authored by the App. The *tag* still says
+`github-actions[bot]` either way -- `publish-tag.sh` sets that git identity itself,
+and it is unrelated to which token did the push.
 Rotate by generating a second key, re-running `gh secret set`, then deleting the old
 key in the App's settings — in that order, so no release runs against no key.
 
