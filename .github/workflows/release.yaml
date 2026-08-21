@@ -316,15 +316,14 @@ jobs:
           # workflow changes can be pushed at all -- see the client-id secret.
           token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
 
-      # Pinned to the commit that ADDS this action, not @v1, and only until
-      # the release below publishes. self-release.yaml runs release.yaml
-      # locally, so the merge that introduces publish-tag is also the run that
-      # has to resolve it -- and at that moment @v1 still points at a commit
-      # with no such directory. Exactly the bootstrap docker-build.yaml needed
-      # at v1.5.0; the follow-up PR flips this back to @v1, which is what it
-      # should read from then on. Renovate leaves it alone either way.
+      # @v1 for the same reason the build job pins @v1: this file and the
+      # action it calls ship as one artifact, so a release that changes both
+      # cannot publish the new workflow still calling the old action. v1.7.4
+      # shipped this pinned to the introducing commit instead, because
+      # self-release.yaml runs release.yaml locally and @v1 still pointed at a
+      # commit with no publish-tag directory at the moment that run needed it.
       - name: Tag
-        uses: jcwearn/workflows/.github/actions/publish-tag@9dad365bd6ab56b342cc896dda6669943e9561e3
+        uses: jcwearn/workflows/.github/actions/publish-tag@v1
         with:
           version: ${{ needs.plan.outputs.version }}
           major: ${{ needs.plan.outputs.major }}
