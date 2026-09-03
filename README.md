@@ -718,6 +718,143 @@ for a PR build, `contents: write` + `packages: write` for a release.
 Each is a minor bump away if a repo genuinely needs it. Adding them now would be a flag
 with no expiry date.
 
+## `cloudflare-pages-deploy.yaml`
+
+Builds a Pages site and deploys it with the calling repo's **own** Cloudflare token,
+replacing Cloudflare's dashboard Git integration.
+
+The integration it replaces authenticates through a single account-level Cloudflare
+GitHub App shared by every repo, and that connection cannot be split per app. Each caller
+now holds a token minted and scoped for it alone. Be clear about what that does and does
+not buy: "Cloudflare Pages Write" exists only at **account** scope — Cloudflare offers no
+per-project narrowing — so a leaked token can still edit every Pages project on the
+account. What per-app tokens buy is independent rotation, independent revocation, and
+per-app attribution in the audit log. That is a real improvement and it is not isolation.
+
+### Usage
+
+```yaml
+# .github/workflows/deploy.yml
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  deploy:
+    uses: jcwearn/workflows/.github/workflows/cloudflare-pages-deploy.yaml@v1
+    with:
+      project-name: my-pages-project
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+```
+
+`on: push` with no branch filter is deliberate — see **Previews** below.
+
+### Inputs
+
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `project-name` | yes | — | The Cloudflare Pages **project** name, which is not always the repo name |
+| `ref` | no | `''` | Commit to build and deploy. Empty takes `github.sha` |
+| `output-dir` | no | `dist` | Directory the build writes, relative to the repo root |
+| `build-command` | no | `npm run build` | npm script invocation that produces `output-dir` |
+| `production-branch` | no | `main` | A deploy whose `--branch` equals this is production; anything else is a preview |
+| `timeout-minutes` | no | `10` | Job timeout. Raise for repos with a long build |
+| `extra-env` | no | `''` | `KEY=value`, one per line, applied job-wide before the build |
+
+**Secrets:** `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, both required.
+
+### ⚠️ It builds the commit you were *triggered by*. Pass `ref` when that is wrong
+
+A reusable workflow inherits the **caller's** `github` context, so `github.sha` in here is
+the head the calling run STARTED at. For a plain `on: push` caller that is exactly the
+commit you want, and `ref` can stay empty.
+
+It is the wrong commit for a caller whose earlier job commits to the branch and then calls
+this one. That commit did not exist when `github.sha` was resolved, so this workflow
+checks out the one before it, builds *that* tree, and ships it.
+
+Both nightly refresh jobs on this account had that shape, and both shipped the previous
+commit on every run they made. `jcwearn/jackson-wearn` run 32315077064 is the clearest
+look at it: the refresh job committed `1d5992c` at 23:53:07, and the deploy job checked
+out `b617c43` at 23:53:20 and shipped it as `pages deploy dist --commit-hash=b617c43` —
+the commit *before*, whose `public/resume.pdf` was still the old one. Green every time.
+The site only ever caught up because an unrelated merge to `main` fired the push-triggered
+deploy against the real head, which is also what makes it look fine whenever you go and
+check.
+
+So: **if a job in your workflow pushes before this one runs, pass the SHA it pushed.**
+
+```yaml
+jobs:
+  refresh:
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      # ...
+      - id: commit
+        run: |
+          git push
+          # After the push, and after any rebase -- a rebase rewrites the commit,
+          # so a SHA read earlier names an object the deploy job cannot check out.
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: refresh
+    uses: jcwearn/workflows/.github/workflows/cloudflare-pages-deploy.yaml@v1
+    with:
+      project-name: my-pages-project
+      ref: ${{ needs.refresh.outputs.sha }}
+```
+
+`--commit-hash` follows `ref` too, so the dashboard's deployment list names the commit
+that actually shipped. That half matters as much as the checkout: while both read
+`github.sha`, the run was green *and* the dashboard agreed with it, which is how this went
+unnoticed across two repos.
+
+### `project-name` is the PROJECT, not the repo
+
+Getting it wrong does not fail. `wrangler pages deploy` **creates** a project that does
+not exist, so a typo yields a second, empty project and a site that silently stops
+updating while the old one keeps serving. Check it against the dashboard, not against the
+repo name — `borderline` deploys to `borderline-golf`, `priceatronic2` to `priceatronic`,
+`anupamaandjackson` to `anupama-and-jackson`.
+
+### Previews are a requirement, not a bonus
+
+Callers trigger on push to **any** branch, not on `pull_request`. That is what the Git
+integration did — a branch pushed without a PR still got a preview — and wiring both would
+double-deploy every PR branch.
+
+The branch-alias URL scheme is a property of the Pages **project**, not of the Git
+integration: Cloudflare builds `<branch>.<project>.pages.dev` from whatever `--branch` it
+is given. Passing `github.ref_name` reproduces exactly the URLs the integration produced,
+so a branch bookmarked on a phone keeps working and keeps updating.
+
+A preview also edits a sticky comment onto any open PR for the branch, formatted to match
+Cloudflare's own. Reporting only: it never fails the job.
+
+### Concurrency
+
+Declared inside this workflow as `cloudflare-pages-deploy-<project-name>-<ref>`, keyed on
+the project because the project is what two deploys actually contend for. It used to key
+on `github.workflow`, which inside a reusable workflow is the **caller's** — so a
+push-triggered deploy and a nightly-refresh-triggered deploy of the same project sat in
+different groups and could upload concurrently, last finisher winning.
+
+**Callers must not declare their own `concurrency:`** — two groups for one logical run
+means the outer one holds a slot while the inner one queues behind it.
+
+Superseded **preview** builds are cancelled: the branch alias points at the newest
+deployment regardless, so an overtaken one has nothing to contribute. Production is never
+cancelled — a cancelled deploy leaves the site on the previous commit behind a green
+check, which is the worst of both.
+
 ## `release.yaml`
 
 Cuts a release for the calling repo when a labelled PR merges to `main`. Every PR
