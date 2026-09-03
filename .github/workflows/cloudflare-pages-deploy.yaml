@@ -40,6 +40,20 @@ on:
           serving. Check it against the dashboard, not against the repo name.
         required: true
         type: string
+      ref:
+        description: >-
+          Commit to build and deploy. Defaults to github.sha, which is the head
+          the RUN started at -- not the head now.
+
+          A caller whose earlier job commits to the branch and then calls this
+          one MUST pass the SHA it pushed. github.sha still names the commit
+          before it, and this workflow would otherwise build and publish that
+          one -- succeeding, staying green, and shipping the previous state
+          forever. anupamaandjackson's nightly schedule refresh did exactly
+          that: every run published the index the run before it had generated.
+        required: false
+        default: ""
+        type: string
       output-dir:
         description: "Directory the build writes, relative to the repo root."
         required: false
@@ -83,11 +97,16 @@ permissions:
   pull-requests: write
 
 concurrency:
-  # github.workflow and github.ref are the CALLER's inside a reusable workflow,
-  # so this is one group per calling workflow per ref. Callers must NOT declare
-  # their own -- two groups for one logical run means the outer holds a slot
-  # while the inner queues behind it.
-  group: cloudflare-pages-deploy-${{ github.workflow }}-${{ github.ref }}
+  # Keyed on the PROJECT, because the project is what two deploys actually
+  # contend for. This used to key on github.workflow, which is the CALLER's
+  # inside a reusable workflow -- so a push-triggered deploy and a
+  # nightly-refresh-triggered deploy of the SAME project landed in different
+  # groups and could run at once, two wrangler uploads racing for one
+  # production branch with the last finisher winning.
+  #
+  # Callers must still NOT declare their own group: two groups for one logical
+  # run means the outer holds a slot while the inner queues behind it.
+  group: cloudflare-pages-deploy-${{ inputs.project-name }}-${{ github.ref }}
   # Superseded PREVIEW builds are noise: the branch alias points at the newest
   # deployment regardless, so an overtaken one has nothing to contribute.
   # Production must never be cancelled -- a cancelled deploy leaves the site on
@@ -103,6 +122,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          # Whatever the caller named, else the head the run started at. See
+          # the `ref` input for why a caller that commits needs the former.
+          ref: ${{ inputs.ref || github.sha }}
           # Nothing here pushes a ref.
           persist-credentials: false
 
@@ -144,7 +166,7 @@ jobs:
             pages deploy ${{ inputs.output-dir }}
             --project-name=${{ inputs.project-name }}
             --branch=${{ github.ref_name }}
-            --commit-hash=${{ github.sha }}
+            --commit-hash=${{ inputs.ref || github.sha }}
             --commit-dirty=false
 
       # Only when a PR exists for this branch. The deploy already happened
