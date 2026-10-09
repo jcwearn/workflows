@@ -34,11 +34,12 @@ jobs:
     # granted, so the grant belongs here where it is visible.
     permissions:
       contents: read
-    # Renovate pins this to a digest on its next run, leaving `# v1` behind as
-    # the record of what to follow. Write `@v1` with no trailing comment; the
-    # comment belongs on a digest, where it says which tag the digest came
-    # from. See the repo README for what counts as breaking.
-    uses: jcwearn/workflows/.github/workflows/go-ci.yaml@v1
+    # Renovate pins this to a digest on its next run, leaving `# v1.8.5` behind
+    # as the record of what release it is. Write the latest exact release with
+    # no trailing comment -- never `# v1`, which goes stale at the next release
+    # and fails zizmor's ref-version-mismatch audit. See the repo README for
+    # what counts as breaking.
+    uses: jcwearn/workflows/.github/workflows/go-ci.yaml@v1.8.5
     # The only input, and it is optional; delete this block if 10 minutes is
     # enough, which it is for every Go repo here today.
     with:
