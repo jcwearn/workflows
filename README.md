@@ -17,19 +17,24 @@ Two kinds of tag, the same shape `actions/checkout` publishes:
 
 ### How to consume it
 
-**Pin the digest, comment the tag** — the same way every other action in these repos
-is pinned:
+**Pin the digest, comment the exact release:**
 
 ```yaml
-uses: jcwearn/workflows/.github/workflows/public-sync.yaml@d05307571ec735cdd30d60377db0fff881bb78e2 # v1
+uses: jcwearn/workflows/.github/workflows/public-sync.yaml@ebb8737fed6e23eb39a68f42cedf4d32dd9fb1f3 # v1.8.5
 ```
 
-Write `@v1` and let Renovate resolve it, or paste the digest yourself. The comment is
-not decoration: it records which tag the digest came from, and it's how Renovate knows
-to watch `v1` and open a PR when a release moves it.
+Write `@v1.8.5` (or whatever the latest `vX.Y.Z` is) and let Renovate resolve it, or
+paste the digest yourself. The comment is not decoration: it records which release the
+digest is, and it's how Renovate knows to watch this repo's tags and open a PR when a
+newer release lands. A digest pin with nothing tracking it is a dependency that silently
+never updates.
 
-This is why the moving tag exists even though nothing resolves `@v1` at run time. A
-digest pin with nothing tracking it is a dependency that silently never updates.
+Comment the **exact** release, not `v1`. `v1` moves at every release, so a `# v1` comment
+stops matching its digest the moment a new release is cut, and stays wrong until Renovate
+next runs. zizmor's `ref-version-mismatch` audit fails on exactly that, which turned
+k3s-cluster's CI red on every workflows release. `# v1.8.5` never moves, so it is always
+true of the digest beside it. Renovate still offers anything newer within `v1` as an
+ordinary update, and a `v2` as a separate major one.
 
 For comparison, `actions/checkout` right now:
 
@@ -39,7 +44,8 @@ For comparison, `actions/checkout` right now:
 3d3c42e5  refs/tags/v7         currently tracking v7.0.1
 ```
 
-`@3d3c42e5… # v7` is a pin to a specific commit *and* a statement about what to follow.
+`@3d3c42e5… # v7.0.1` is a pin to a specific commit *and* a record of which release it is.
+`# v7` would be true today and false the day `v7` moves to `v7.0.2`.
 
 ### What counts as a version bump
 
@@ -69,7 +75,7 @@ gitleaks can newly flag a repo that was previously passing. That would be an
 unpleasant surprise if it arrived automatically.
 
 It doesn't. Because consumers pin a digest, every release — patch included — arrives
-as a Renovate PR you can read and merge on your own schedule. The moving `v1` tag is
+as a Renovate PR you can read and merge on your own schedule. A new `vX.Y.Z` tag is
 what triggers that PR; it isn't what applies the change.
 
 A repo that wants to opt out of even that can pin `gitleaks-version` explicitly rather
@@ -103,9 +109,10 @@ jobs:
   publish:
     permissions:
       contents: read
-    # Write @v1 and let Renovate pin it to a digest on its next run, or paste
-    # the digest yourself. Either way the trailing comment must say v1.
-    uses: jcwearn/workflows/.github/workflows/public-sync.yaml@v1
+    # Write the latest exact release and let Renovate pin it to a digest on its
+    # next run, or paste the digest yourself. Either way the trailing comment
+    # must name that exact release, not v1.
+    uses: jcwearn/workflows/.github/workflows/public-sync.yaml@v1.8.5
     with:
       target-repo: jcwearn/myrepo-public
       readme-override: .github/public-README.md
@@ -292,7 +299,7 @@ jobs:
   ci:
     permissions:
       contents: read
-    uses: jcwearn/workflows/.github/workflows/go-ci.yaml@v1
+    uses: jcwearn/workflows/.github/workflows/go-ci.yaml@v1.8.5
 ```
 
 Start from `templates/ci-go.yaml`.
@@ -433,7 +440,7 @@ jobs:
   ci:
     permissions:
       contents: read
-    uses: jcwearn/workflows/.github/workflows/node-ci.yaml@v1
+    uses: jcwearn/workflows/.github/workflows/node-ci.yaml@v1.8.5
 ```
 
 Start from `templates/ci-node.yaml`.
@@ -532,7 +539,7 @@ jobs:
   ci:
     permissions:
       contents: read
-    uses: jcwearn/workflows/.github/workflows/python-ci.yaml@v1
+    uses: jcwearn/workflows/.github/workflows/python-ci.yaml@v1.8.5
 ```
 
 Start from `templates/ci-python.yaml`.
@@ -663,7 +670,7 @@ jobs:
   build:
     permissions:
       contents: read
-    uses: jcwearn/workflows/.github/workflows/docker-build.yaml@v1
+    uses: jcwearn/workflows/.github/workflows/docker-build.yaml@v1.8.5
 ```
 
 Start from `templates/ci-docker.yaml`.
@@ -745,7 +752,7 @@ permissions:
 
 jobs:
   deploy:
-    uses: jcwearn/workflows/.github/workflows/cloudflare-pages-deploy.yaml@v1
+    uses: jcwearn/workflows/.github/workflows/cloudflare-pages-deploy.yaml@v1.8.5
     with:
       project-name: my-pages-project
     secrets:
@@ -806,7 +813,7 @@ jobs:
 
   deploy:
     needs: refresh
-    uses: jcwearn/workflows/.github/workflows/cloudflare-pages-deploy.yaml@v1
+    uses: jcwearn/workflows/.github/workflows/cloudflare-pages-deploy.yaml@v1.8.5
     with:
       project-name: my-pages-project
       ref: ${{ needs.refresh.outputs.sha }}
@@ -886,7 +893,7 @@ jobs:
     if: github.event.pull_request.merged == true
     permissions:
       contents: write
-    uses: jcwearn/workflows/.github/workflows/release.yaml@v1
+    uses: jcwearn/workflows/.github/workflows/release.yaml@v1.8.5
 ```
 
 For a repo that ships a container image, add `image` and `packages: write`:
@@ -898,7 +905,7 @@ jobs:
     permissions:
       contents: write
       packages: write
-    uses: jcwearn/workflows/.github/workflows/release.yaml@v1
+    uses: jcwearn/workflows/.github/workflows/release.yaml@v1.8.5
     with:
       image: ghcr.io/jcwearn/myrepo
 ```
@@ -954,7 +961,7 @@ jobs:
     if: github.event.pull_request.merged == true
     permissions:
       contents: write
-    uses: jcwearn/workflows/.github/workflows/release.yaml@v1
+    uses: jcwearn/workflows/.github/workflows/release.yaml@v1.8.5
     secrets:
       client-id: ${{ secrets.RELEASE_APP_CLIENT_ID }}
       private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -1031,7 +1038,7 @@ on:
 
 jobs:
   check:
-    uses: jcwearn/workflows/.github/workflows/require-release-label.yaml@v1
+    uses: jcwearn/workflows/.github/workflows/require-release-label.yaml@v1.8.5
 ```
 
 **Keep `edited` in that list.** It's what fires when a PR's base branch changes. Drop
@@ -1068,7 +1075,7 @@ They're usable on their own if you want the pieces without the workflow:
 
 ```yaml
 - id: label
-  uses: jcwearn/workflows/.github/actions/release-label@v1
+  uses: jcwearn/workflows/.github/actions/release-label@v1.8.5
   with:
     labels: ${{ toJson(github.event.pull_request.labels.*.name) }}
 ```
