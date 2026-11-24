@@ -302,6 +302,20 @@ Start from `templates/ci-go.yaml`.
 | Input | Required | Default | Description |
 |---|---|---|---|
 | `timeout-minutes` | no | `10` | Job timeout. Raise for a suite that stands up a real dependency, or a tree large enough that `-race` is slow |
+| `cache-paths` | no | `""` | Extra paths to cache, newline-separated: what a test suite downloads that setup-go's caches miss. Empty adds no step |
+| `cache-key` | no | `extra` | Names that cache; change it to invalidate |
+| `cache-key-files` | no | `go.sum` | Glob whose contents decide when that cache is stale |
+
+A suite that downloads at test time -- embedded-postgres fetching a Postgres build from Maven
+Central on every run, say -- is both slower and flakier than it needs to be: one failed fetch
+fails the run. Caching the download fixes both, and a miss only costs the download:
+
+```yaml
+    uses: jcwearn/workflows/.github/workflows/go-ci.yaml@<sha> # vX.Y.Z
+    with:
+      cache-paths: ~/.embedded-postgres-go
+      cache-key: embedded-postgres
+```
 
 **Secrets: none.** `GITHUB_TOKEN` only, at `contents: read`.
 
