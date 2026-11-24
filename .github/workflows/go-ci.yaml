@@ -77,6 +77,32 @@ on:
         required: false
         default: 10
         type: number
+      cache-paths:
+        description: >-
+          Extra paths to cache between runs, newline-separated, for things a
+          test suite downloads that setup-go's module and build caches do not
+          cover -- e.g. the Postgres binaries embedded-postgres fetches into
+          ~/.embedded-postgres-go. Empty (the default) adds no step at all.
+        required: false
+        default: ""
+        type: string
+      cache-key:
+        description: >-
+          Names the cache for cache-paths, and is the thing to change to
+          invalidate it. Combined with the runner OS and a hash of
+          cache-key-files, so a dependency bump that changes what gets
+          downloaded starts a fresh cache.
+        required: false
+        default: "extra"
+        type: string
+      cache-key-files:
+        description: >-
+          Glob of files whose contents decide when the cache-paths cache is
+          stale. go.sum by default: the downloaded artifact usually follows a
+          module version.
+        required: false
+        default: "go.sum"
+        type: string
 
 permissions:
   contents: read
@@ -114,6 +140,18 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7
         with:
           go-version-file: go.mod
+
+      # Opt-in, for what a test suite downloads at run time. A cache miss only
+      # costs the download it was meant to save, so this can never turn a
+      # green run red -- which is why it is safe to offer generally rather
+      # than per repo. Restored before the tidy check so `go test` finds it;
+      # saved at job end only on a miss, as actions/cache does by default.
+      - name: Restore extra caches
+        if: inputs.cache-paths != ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ inputs.cache-paths }}
+          key: go-ci-${{ runner.os }}-${{ inputs.cache-key }}-${{ hashFiles(inputs.cache-key-files) }}
 
       # The Go analogue of node-ci's lockfile check, and it belongs here for
       # the same reason: `go build` and `go test` are perfectly happy with a
